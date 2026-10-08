@@ -1,0 +1,4 @@
+{
+  "name": "yaml",
+  "entry_class": "net.sf.okapi.filters.yaml.YamlFilter"
+}

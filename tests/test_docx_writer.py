@@ -1,0 +1,627 @@
+from pathlib import Path
+import importlib
+import importlib.util
+
+from core.document.model import Code, Skeleton, TextFragment, TextUnit
+from core.events.model import Event, EventType
+
+def _writer_class():
+    spec = importlib.util.find_spec("filters.docx.writer")
+    assert spec is not None, "Brakuje modułu filters.docx.writer"
+    return importlib.import_module("filters.docx.writer").DocxWriter
+
+def test_docx_writer_creates_valid_docx_from_text_units(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "output.docx"
+    events = [
+        Event(EventType.START_DOCUMENT, object()),
+        Event(EventType.TEXT_UNIT, TextUnit("1", (TextFragment(("Akapit testowy",)),))),
+        Event(EventType.DOCUMENT_PART, Skeleton(("paragraph",))),
+        Event(EventType.END_DOCUMENT, object()),
+    ]
+    DocxWriter().write(events, target)
+    assert target.exists()
+    with importlib.import_module("zipfile").ZipFile(target) as archive:
+        assert "word/document.xml" in archive.namelist()
+
+def test_docx_writer_preserves_inline_codes(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "inline.docx"
+    unit = TextUnit("1", (TextFragment(("Przed ", Code("Link", "hyperlink"), " po")),))
+    DocxWriter().write([Event(EventType.TEXT_UNIT, unit)], target)
+    events = list(importlib.import_module("filters.docx.reader").DocxReader().read(target))
+    units = [e.resource for e in events if e.type == EventType.TEXT_UNIT]
+    parts = [part for fragment in units[0].fragments for part in fragment.parts]
+    assert "Przed " in parts
+    assert any(getattr(p, "kind", None) == "hyperlink" for p in parts)
+
+def test_docx_writer_round_trip_preserves_unicode_and_protected_content(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "roundtrip.docx"
+    unit = TextUnit("1", (TextFragment(("Zażółć gęślą jaźń — 漢字 — 😀 ", Code("NIE TŁUMACZ", "protected"))),), {"style": "Heading1"})
+    DocxWriter().write([Event(EventType.TEXT_UNIT, unit)], target)
+    events = list(importlib.import_module("filters.docx.reader").DocxReader().read(target))
+    units = [e.resource for e in events if e.type == EventType.TEXT_UNIT]
+    assert any("Zażółć gęślą jaźń — 漢字 — 😀 " in p for u in units for f in u.fragments for p in f.parts if isinstance(p, str))
+    assert any(getattr(p, "kind", None) == "protected" and p.data == "NIE TŁUMACZ" for u in units for f in u.fragments for p in f.parts if not isinstance(p, str))
+    assert any(u.metadata and u.metadata.get("style") == "Heading1" for u in units)
+
+
+def test_docx_writer_round_trip_preserves_table_structure(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "table.docx"
+    units = [
+        TextUnit("1", (TextFragment(("A",)),), {"container": "table", "table": "0", "cell": "0"}),
+        TextUnit("2", (TextFragment(("B",)),), {"container": "table", "table": "0", "cell": "1"}),
+    ]
+    events = [Event(EventType.TEXT_UNIT, u) for u in units]
+    DocxWriter().write(events, target)
+    reread = list(importlib.import_module("filters.docx.reader").DocxReader().read(target))
+    table_units = [e.resource for e in reread if e.type == EventType.TEXT_UNIT and (e.resource.metadata or {}).get("container") == "table"]
+    assert len(table_units) == 2
+    assert [u.fragments[0].parts[0] for u in table_units] == ["A", "B"]
+
+
+def test_docx_writer_round_trip_preserves_header_and_footer(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "parts.docx"
+    events = [
+        Event(EventType.TEXT_UNIT, TextUnit("1", (TextFragment(("Naglowek",)),), {"part": "header"})),
+        Event(EventType.TEXT_UNIT, TextUnit("2", (TextFragment(("Treść",)),), {"part": "body"})),
+        Event(EventType.TEXT_UNIT, TextUnit("3", (TextFragment(("Stopka",)),), {"part": "footer"})),
+    ]
+    DocxWriter().write(events, target)
+    reread = list(importlib.import_module("filters.docx.reader").DocxReader().read(target))
+    texts = [p for e in reread if e.type == EventType.TEXT_UNIT for f in e.resource.fragments for p in f.parts if isinstance(p, str)]
+    assert "Naglowek" in texts
+    assert "Treść" in texts
+    assert "Stopka" in texts
+
+
+def test_docx_writer_writes_hyperlink_relationship(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "relationship.docx"
+    unit = TextUnit("1", (TextFragment((Code("OpenAI", "hyperlink"),)),))
+    DocxWriter().write([Event(EventType.TEXT_UNIT, unit)], target)
+    from zipfile import ZipFile
+    from xml.etree import ElementTree as ET
+    with ZipFile(target) as archive:
+        rels = ET.fromstring(archive.read("word/_rels/document.xml.rels"))
+        relationships = list(rels)
+        assert any(r.get("Target") == "https://example.com" for r in relationships)
+        document = ET.fromstring(archive.read("word/document.xml"))
+        hyperlink = document.find(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}hyperlink")
+        assert hyperlink is not None
+        assert hyperlink.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+
+
+def test_docx_writer_preserves_empty_paragraph_and_order(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "order.docx"
+    events = [
+        Event(EventType.TEXT_UNIT, TextUnit("1", (TextFragment(("pierwszy",)),))),
+        Event(EventType.TEXT_UNIT, TextUnit("2", (TextFragment(tuple()),))),
+        Event(EventType.TEXT_UNIT, TextUnit("3", (TextFragment(("trzeci",)),))),
+    ]
+    DocxWriter().write(events, target)
+    reread = list(importlib.import_module("filters.docx.reader").DocxReader().read(target))
+    units = [e.resource for e in reread if e.type == EventType.TEXT_UNIT]
+    assert [u.fragments[0].parts for u in units] == [("pierwszy",), (), ("trzeci",)]
+    from zipfile import ZipFile
+    with ZipFile(target) as archive:
+        xml = archive.read("word/document.xml").decode()
+        assert "<w:p />" in xml or "<w:p/>" in xml
+
+
+def test_docx_writer_round_trip_preserves_hyperlink_target(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "hyperlink-target.docx"
+    unit = TextUnit("1", (TextFragment((Code("Dokumentacja", "hyperlink", "https://docs.example.test/okapi"),)),))
+    DocxWriter().write([Event(EventType.TEXT_UNIT, unit)], target)
+    reread = list(importlib.import_module("filters.docx.reader").DocxReader().read(target))
+    codes = [p for e in reread if e.type == EventType.TEXT_UNIT for f in e.resource.fragments for p in f.parts if isinstance(p, Code)]
+    assert any(c.kind == "hyperlink" and c.target == "https://docs.example.test/okapi" for c in codes)
+
+
+def test_docx_writer_emits_header_footer_relationships(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "part-relations.docx"
+    events = [
+        Event(EventType.TEXT_UNIT, TextUnit("1", (TextFragment(("H",)),), {"part": "header"})),
+        Event(EventType.TEXT_UNIT, TextUnit("2", (TextFragment(("F",)),), {"part": "footer"})),
+    ]
+    DocxWriter().write(events, target)
+    from zipfile import ZipFile
+    with ZipFile(target) as archive:
+        rels = archive.read("word/_rels/document.xml.rels").decode()
+        document = archive.read("word/document.xml").decode()
+        assert "header1.xml" in rels and "footer1.xml" in rels
+        assert "headerReference" in document and "footerReference" in document
+
+
+def test_docx_writer_preserves_multiple_table_rows_and_cell_coordinates(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "table-rows.docx"
+    units = [
+        TextUnit("1", (TextFragment(("A1",)),), {"container": "table", "table": "0", "row": "0", "cell": "0"}),
+        TextUnit("2", (TextFragment(("B1",)),), {"container": "table", "table": "0", "row": "0", "cell": "1"}),
+        TextUnit("3", (TextFragment(("A2",)),), {"container": "table", "table": "0", "row": "1", "cell": "0"}),
+        TextUnit("4", (TextFragment(("B2",)),), {"container": "table", "table": "0", "row": "1", "cell": "1"}),
+    ]
+    DocxWriter().write([Event(EventType.TEXT_UNIT, u) for u in units], target)
+    reread = list(importlib.import_module("filters.docx.reader").DocxReader().read(target))
+    table_units = [e.resource for e in reread if e.type == EventType.TEXT_UNIT and (e.resource.metadata or {}).get("container") == "table"]
+    assert [(u.metadata.get("row"), u.metadata.get("cell")) for u in table_units] == [("0", "0"), ("0", "1"), ("1", "0"), ("1", "1")]
+    assert [u.fragments[0].parts[0] for u in table_units] == ["A1", "B1", "A2", "B2"]
+
+
+def test_docx_writer_preserves_numbering_metadata(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "numbering-roundtrip.docx"
+    unit = TextUnit("1", (TextFragment(("Punkt",)),), {"num_id": "7", "num_level": "1"})
+    DocxWriter().write([Event(EventType.TEXT_UNIT, unit)], target)
+    reread = list(importlib.import_module("filters.docx.reader").DocxReader().read(target))
+    units = [e.resource for e in reread if e.type == EventType.TEXT_UNIT]
+    assert units[0].metadata["num_id"] == "7"
+    assert units[0].metadata["num_level"] == "1"
+
+
+def test_docx_writer_round_trip_preserves_direct_run_properties(tmp_path):
+    DocxWriter = _writer_class()
+    target = tmp_path / "run-properties.docx"
+    fragment = TextFragment(("Styled",), {"bold": "true", "italic": "true", "underline": "single", "color": "FF0000", "size": "28", "font": "Arial"})
+    DocxWriter().write([Event(EventType.TEXT_UNIT, TextUnit("1", (fragment,)))], target)
+    from filters.docx.reader import DocxReader
+    reread = list(DocxReader().read(target))
+    fragments = [f for e in reread if e.type == EventType.TEXT_UNIT for f in e.resource.fragments]
+    styled = next(f for f in fragments if f.parts == ("Styled",))
+    assert styled.metadata == fragment.metadata
+
+def test_docx_writer_round_trip_preserves_markup_wrappers(tmp_path):
+    from core.document.model import Markup, TextFragment, TextUnit
+    from core.events.model import Event, EventType
+    from filters.docx.reader import DocxReader
+    DocxWriter = _writer_class()
+    target = tmp_path / "markup.docx"
+    unit = TextUnit("1", (TextFragment((
+        Markup.start("w:ins", (("w:id", "7"),)),
+        "dodany",
+        Markup.end("w:ins"),
+    )),))
+    DocxWriter().write([Event(EventType.TEXT_UNIT, unit)], target)
+    events = list(DocxReader().read(target))
+    parts = [p for u in (e.resource for e in events if e.type == EventType.TEXT_UNIT) for f in u.fragments for p in f.parts]
+    assert "dodany" in parts
+    assert not any(
+        getattr(p, "kind", None) in {"start", "end"} and getattr(p, "name", None) == "w:ins"
+        for p in parts
+    )
+
+
+def test_docx_reader_exposes_source_package_for_lossless_writer():
+    from filters.docx.reader import DocxReader
+    from core.events.model import EventType
+
+    source = Path("fixtures/docx/okapi/1341-textbox-with-a-hyperlink.docx")
+    start = next(e.resource for e in DocxReader().read(source) if e.type == EventType.START_DOCUMENT)
+    assert start.source_path == str(source.resolve())
+
+def test_docx_writer_preserves_unmodified_package_parts():
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    from core.events.model import EventType
+    from zipfile import ZipFile
+
+    source = Path("fixtures/docx/okapi/1341-textbox-with-a-hyperlink.docx")
+    target = Path("tests/.tmp-package-preserved.docx")
+    events = list(DocxReader().read(source))
+    DocxWriter().write(events, target)
+
+    with ZipFile(source) as original, ZipFile(target) as result:
+        for name in ("word/styles.xml", "word/theme/theme1.xml", "word/_rels/document.xml.rels"):
+            assert name in result.namelist(), name
+            assert result.read(name) == original.read(name), name
+
+def test_docx_writer_translates_in_place_without_rebuilding_package():
+    from dataclasses import replace
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    from core.events.model import EventType, Event
+    from core.document.model import TextUnit, TextFragment
+    from zipfile import ZipFile
+
+    source = Path("fixtures/docx/okapi/1341-textbox-with-a-hyperlink.docx")
+    target = Path("tests/.tmp-package-translated.docx")
+    events = list(DocxReader().read(source))
+
+    translated = []
+    changed = False
+    for event in events:
+        if event.type != EventType.TEXT_UNIT or changed:
+            translated.append(event)
+            continue
+        unit = event.resource
+        fragments = []
+        for fragment in unit.fragments:
+            parts = tuple("Przykład" if part == "Okapiframework" else part for part in fragment.parts)
+            fragments.append(replace(fragment, parts=parts))
+        new_unit = replace(unit, fragments=tuple(fragments))
+        changed = new_unit != unit
+        translated.append(Event(EventType.TEXT_UNIT, new_unit, event.skeleton))
+
+    assert changed
+    DocxWriter().write(translated, target)
+
+    with ZipFile(source) as original, ZipFile(target) as result:
+        assert result.read("word/styles.xml") == original.read("word/styles.xml")
+        assert result.read("word/theme/theme1.xml") == original.read("word/theme/theme1.xml")
+        document = result.read("word/document.xml").decode("utf-8")
+        assert "Przykład" in document
+        assert "Okapiframework" not in document
+
+def test_docx_writer_translates_header_and_footer_in_original_parts():
+    from dataclasses import replace
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    from core.events.model import EventType, Event
+    from zipfile import ZipFile
+
+    source = Path("fixtures/docx/reference.docx")
+    target = Path("tests/.tmp-header-footer-translated.docx")
+    events = list(DocxReader().read(source))
+    translated = []
+    changed = set()
+    for event in events:
+        if event.type != EventType.TEXT_UNIT:
+            translated.append(event)
+            continue
+        unit = event.resource
+        parts = []
+        for fragment in unit.fragments:
+            fragment_parts = tuple(
+                "Nagłówek przetłumaczony" if part == "Nagłówek testowy"
+                else "Stopka przetłumaczona" if part == "Stopka testowa"
+                else part
+                for part in fragment.parts
+            )
+            parts.append(replace(fragment, parts=fragment_parts))
+        new_unit = replace(unit, fragments=tuple(parts))
+        if new_unit != unit:
+            changed.add((unit.metadata or {}).get("part"))
+        translated.append(Event(EventType.TEXT_UNIT, new_unit, event.skeleton))
+
+    assert changed == {"header", "footer"}
+    DocxWriter().write(translated, target)
+
+    with ZipFile(target) as result:
+        header = result.read("word/header1.xml").decode("utf-8")
+        footer = result.read("word/footer1.xml").decode("utf-8")
+        assert "Nagłówek przetłumaczony" in header
+        assert "Stopka przetłumaczona" in footer
+
+def test_docx_writer_translates_core_properties_in_original_package(tmp_path):
+    from dataclasses import replace
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    from core.events.model import EventType, Event
+    from zipfile import ZipFile
+
+    source = tmp_path / "core-properties.docx"
+    target = tmp_path / "core-properties-translated.docx"
+    with ZipFile(source, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:sectPr/></w:body></w:document>',
+        )
+        archive.writestr(
+            "docProps/core.xml",
+            '<cp:coreProperties '
+            'xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            '<dc:title>Original title</dc:title><dc:creator>Author</dc:creator>'
+            '</cp:coreProperties>',
+        )
+
+    events = list(DocxReader().read(source))
+    translated = []
+    for event in events:
+        if event.type != EventType.TEXT_UNIT:
+            translated.append(event)
+            continue
+        unit = event.resource
+        if (unit.metadata or {}).get("source_element_tag", "").endswith("}title"):
+            translated.append(Event(EventType.TEXT_UNIT, replace(
+                unit, fragments=(TextFragment(("Translated title",)),)
+            ), event.skeleton))
+        else:
+            translated.append(event)
+
+    DocxWriter().write(translated, target)
+    with ZipFile(target) as archive:
+        core = archive.read("docProps/core.xml").decode("utf-8")
+        assert "Translated title" in core
+        assert "<dc:creator>Author</dc:creator>" in core
+
+def test_docx_writer_translates_graphic_name_attribute_in_original_package(tmp_path):
+    from dataclasses import replace
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    from core.events.model import Event, EventType
+    from zipfile import ZipFile
+
+    source = Path("/home/frs/Projekty/Okapi-main/okapi/filters/openxml/src/test/resources/1406-code-finding.docx")
+    target = tmp_path / "graphic-name-translated.docx"
+    events = list(DocxReader().read(source))
+    translated = []
+    changed = False
+    for event in events:
+        if event.type != EventType.TEXT_UNIT:
+            translated.append(event)
+            continue
+        unit = event.resource
+        metadata = unit.metadata or {}
+        if metadata.get("source_attribute_locators"):
+            parts = list(unit.fragments[0].parts)
+            if parts and isinstance(parts[0], str) and parts[0].startswith("1406, docPr"):
+                parts[0] = parts[0].replace("1406, docPr", "Przetłumaczona nazwa", 1)
+                unit = replace(unit, fragments=(replace(unit.fragments[0], parts=tuple(parts)),) + unit.fragments[1:])
+                changed = True
+        translated.append(Event(EventType.TEXT_UNIT, unit, event.skeleton))
+
+    assert changed
+    DocxWriter().write(translated, target)
+    with ZipFile(target) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+        assert "Przetłumaczona nazwa, text box, issue #1406" in xml
+
+
+def test_docx_reader_extracts_external_hyperlink_targets_when_enabled():
+    from filters.docx.reader import DocxReader
+    from core.events.model import EventType
+
+    source = Path("fixtures/docx/reference.docx")
+    default_units = [
+        e.resource for e in DocxReader().read(source) if e.type == EventType.TEXT_UNIT
+    ]
+    assert not any((u.metadata or {}).get("part") == "relationships" for u in default_units)
+
+    units = [
+        e.resource
+        for e in DocxReader(translate_external_hyperlinks=True).read(source)
+        if e.type == EventType.TEXT_UNIT
+    ]
+    links = [u for u in units if (u.metadata or {}).get("part") == "relationships"]
+    assert links
+    assert any(
+        "http" in "".join(p for f in u.fragments for p in f.parts if isinstance(p, str))
+        for u in links
+    )
+
+
+def test_docx_writer_patches_external_hyperlink_target_in_source_package(tmp_path):
+    from dataclasses import replace
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    from core.events.model import Event, EventType
+    from zipfile import ZipFile
+
+    source = Path("fixtures/docx/reference.docx")
+    target = tmp_path / "external-link-translated.docx"
+    events = list(DocxReader(translate_external_hyperlinks=True).read(source))
+    translated = []
+    changed = False
+    for event in events:
+        if event.type == EventType.TEXT_UNIT and (event.resource.metadata or {}).get("part") == "relationships":
+            unit = event.resource
+            parts = list(unit.fragments[0].parts)
+            parts[0] = "https://translated.example/"
+            unit = replace(unit, fragments=(replace(unit.fragments[0], parts=tuple(parts)),))
+            event = Event(EventType.TEXT_UNIT, unit, event.skeleton)
+            changed = True
+        translated.append(event)
+
+    assert changed
+    DocxWriter().write(translated, target)
+    with ZipFile(target) as archive:
+        rels = archive.read("word/_rels/document.xml.rels").decode("utf-8")
+        assert "https://translated.example/" in rels
+
+
+def test_docx_writer_preserves_excluded_style_text_while_translating_included_text(tmp_path):
+    from filters.docx.reader import DocxReader
+    from zipfile import ZipFile
+
+    DocxWriter = _writer_class()
+    source = Path("fixtures/docx/okapi/1394-styles.docx")
+    target = tmp_path / "styles-preserved.docx"
+    events = list(DocxReader(
+        translate_word_in_exclude_style_mode=False,
+        exclude_word_styles={"Emphasis"},
+    ).read(source))
+    from dataclasses import replace
+
+    rewritten = []
+    for event in events:
+        if event.type != EventType.TEXT_UNIT or (event.resource.metadata or {}).get("part") != "body":
+            rewritten.append(event)
+            continue
+        unit = event.resource
+        fragments = []
+        for fragment in unit.fragments:
+            parts = tuple("Przetłumaczony tekst" if part == "styled text" else part for part in fragment.parts)
+            fragments.append(replace(fragment, parts=parts))
+        rewritten.append(replace(event, resource=replace(unit, fragments=tuple(fragments))))
+    DocxWriter().write(rewritten, target)
+
+    with ZipFile(target) as archive:
+        xml = archive.read("word/document.xml").decode()
+    assert "Regular text and " in xml
+    assert "Przetłumaczony tekst" in xml
+    assert "styled text" not in xml
+
+def test_docx_writer_preserves_font_color_excluded_text(tmp_path):
+    from filters.docx.reader import DocxReader
+    from zipfile import ZipFile
+    from dataclasses import replace
+
+    DocxWriter = _writer_class()
+    source = Path("fixtures/docx/okapi/colors.docx")
+    target = tmp_path / "colors-preserved.docx"
+    events = list(DocxReader(
+        translate_word_exclude_colors=True,
+        exclude_word_colors={"FF0000"},
+    ).read(source))
+    rewritten = []
+    for event in events:
+        if event.type != EventType.TEXT_UNIT or (event.resource.metadata or {}).get("part") != "body":
+            rewritten.append(event)
+            continue
+        unit = event.resource
+        fragments = []
+        for fragment in unit.fragments:
+            parts = tuple(
+                {"I am black": "Jestem czarny", "I am green": "Jestem zielony"}.get(part, part)
+                for part in fragment.parts
+            )
+            fragments.append(replace(fragment, parts=parts))
+        rewritten.append(replace(event, resource=replace(unit, fragments=tuple(fragments))))
+    DocxWriter().write(rewritten, target)
+
+    with ZipFile(target) as archive:
+        xml = archive.read("word/document.xml").decode()
+    assert "Jestem czarny" in xml
+    assert "Jestem zielony" in xml
+    assert "I am red" in xml
+
+
+def test_docx_writer_preserves_highlight_excluded_text(tmp_path):
+    from filters.docx.reader import DocxReader
+    from zipfile import ZipFile
+    from dataclasses import replace
+
+    DocxWriter = _writer_class()
+    source = Path("fixtures/docx/okapi/highlights.docx")
+    target = tmp_path / "highlights-preserved.docx"
+    events = list(DocxReader(
+        translate_word_in_exclude_highlight_mode=True,
+        word_highlight_colors={"FFFF00"},
+    ).read(source))
+    rewritten = []
+    for event in events:
+        if event.type != EventType.TEXT_UNIT or (event.resource.metadata or {}).get("part") != "body":
+            rewritten.append(event)
+            continue
+        unit = event.resource
+        fragments = []
+        for fragment in unit.fragments:
+            parts = tuple(
+                {"I am ": "Jestem ", " in a sentence": " w zdaniu"}.get(part, part)
+                for part in fragment.parts
+            )
+            fragments.append(replace(fragment, parts=parts))
+        rewritten.append(replace(event, resource=replace(unit, fragments=tuple(fragments))))
+    DocxWriter().write(rewritten, target)
+
+    with ZipFile(target) as archive:
+        xml = archive.read("word/document.xml").decode()
+    assert "Jestem " in xml
+    assert " w zdaniu" in xml
+    assert "highlighted" in xml
+
+
+def test_docx_writer_patches_wordart_textpath_attribute(tmp_path):
+    from dataclasses import replace
+    from zipfile import ZipFile
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    from core.events.model import Event, EventType
+
+    source = Path("fixtures/docx/okapi/word art.docx")
+    events = list(DocxReader().read(source))
+    units = [e.resource for e in events if e.type == EventType.TEXT_UNIT]
+    target_unit = next(u for u in units if any(
+        (u.metadata or {}).get("source_attribute_locators") and
+        any(isinstance(p, str) and p == "Word art is amazing!" for f in u.fragments for p in f.parts)
+        for _ in [0]
+    ))
+    fragments = tuple(replace(f, parts=tuple("Word art translated!" if p == "Word art is amazing!" else p for p in f.parts)) for f in target_unit.fragments)
+    units[units.index(target_unit)] = replace(target_unit, fragments=fragments)
+    DocxWriter().write([events[0]] + [Event(EventType.TEXT_UNIT, u) for u in units], tmp_path / "out.docx")
+    with ZipFile(tmp_path / "out.docx") as z:
+        xml = z.read("word/document.xml").decode()
+    assert 'string="Word art translated!"' in xml
+
+
+def test_docx_writer_preserves_and_translates_phonetic_guide_text_and_base_text(tmp_path):
+    from dataclasses import replace
+    from zipfile import ZipFile
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    from core.events.model import EventType
+
+    source = Path("fixtures/docx/okapi/SampleRuby.docx")
+    units = [e.resource for e in DocxReader().read(source) if e.type == EventType.TEXT_UNIT]
+    body = [u for u in units if (u.metadata or {}).get("part") == "body"]
+    assert body
+    unit = body[0]
+    fragments = []
+    replacements = {"yeehah": "ruby translation", "Pellentesque": "base translation"}
+    for fragment in unit.fragments:
+        parts = tuple(replacements.get(part, part) if isinstance(part, str) else part for part in fragment.parts)
+        fragments.append(replace(fragment, parts=parts))
+    unit = replace(unit, fragments=tuple(fragments))
+    units[units.index(body[0])] = unit
+
+    target = tmp_path / "ruby-out.docx"
+    from core.events.model import Event
+    start = next(e for e in DocxReader().read(source) if e.type == EventType.START_DOCUMENT)
+    events = [start] + [Event(EventType.TEXT_UNIT, unit) for unit in units]
+    DocxWriter().write(events, target)
+    with ZipFile(target) as z:
+        xml = z.read("word/document.xml").decode()
+    assert "ruby translation" in xml
+    assert "base translation" in xml
+
+
+def test_docx_writer_updates_direct_numbering_level_override(tmp_path):
+    from zipfile import ZipFile, ZIP_DEFLATED
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    from core.events.model import EventType
+    from dataclasses import replace
+
+    source = tmp_path / "numbering-override-source.docx"
+    numbering = b'''<?xml version="1.0"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:lvlText w:val="BASE%1"/></w:lvl></w:abstractNum><w:num w:numId="7"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:lvlText w:val="OVERRIDE%1"/></w:lvlOverride></w:num></w:numbering>'''
+    document = b'''<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t>Text</w:t></w:r></w:p><w:sectPr/></w:body></w:document>'''
+    with ZipFile(source, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", document)
+        archive.writestr("word/numbering.xml", numbering)
+
+    unit = next(e.resource for e in DocxReader(translate_word_numbering_level_text=True).read(source) if e.type == EventType.TEXT_UNIT and (e.resource.metadata or {}).get("part") == "numbering")
+    unit = replace(unit, fragments=(replace(unit.fragments[0], parts=("CHANGED",)),))
+    with ZipFile(source) as archive:
+        patched = DocxWriter()._patch_source_xml(archive.read("word/numbering.xml"), [unit]).decode()
+
+    assert 'w:val="CHANGED"' in patched
+    assert 'w:val="BASE%1"' in patched
+    assert 'w:val="OVERRIDE%1"' not in patched
+
+
+def test_docx_writer_round_trips_code_finder_codes(tmp_path):
+    from filters.docx.reader import DocxReader
+    from filters.docx.writer import DocxWriter
+    source = Path("fixtures/docx/okapi/overlapping-codefinder.docx")
+    target = tmp_path / "overlapping-codefinder-roundtrip.docx"
+    events = list(DocxReader(use_code_finder=True, code_finder_rules=[r"\[[^\[]+?\]"]).read(source))
+    DocxWriter().write(events, target)
+    reread = list(DocxReader(use_code_finder=True, code_finder_rules=[r"\[[^\[]+?\]"]).read(target))
+    strings = [
+        part.data
+        for event in reread
+        if event.type == EventType.TEXT_UNIT
+        for fragment in event.resource.fragments
+        for part in fragment.parts
+        if getattr(part, "kind", None) == "regxph"
+    ]
+    assert "[Foo bar baz QUUX]" in strings

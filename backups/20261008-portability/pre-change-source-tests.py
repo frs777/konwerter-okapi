@@ -1,0 +1,158 @@
+from pathlib import Path
+
+
+def test_source_extractor_reads_real_markdown_filter_source():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/markdown/src/main/java/net/sf/okapi/filters/markdown/MarkdownFilter.java')
+    result = JavaSourceBehaviorExtractor().extract_markdown_filter(source)
+    assert result.class_name == 'MarkdownFilter'
+    assert result.mime_type == 'text/markdown'
+    assert '.md' in result.extensions
+    assert 'skeleton' in result.features
+
+
+def test_source_extractor_recovers_markdown_parameter_keys():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/markdown/src/main/java/net/sf/okapi/filters/markdown/Parameters.java')
+    result = JavaSourceBehaviorExtractor().extract_markdown_filter(Path('/home/frs/Projekty/Okapi-main/okapi/filters/markdown/src/main/java/net/sf/okapi/filters/markdown/MarkdownFilter.java'))
+    assert 'translateUrls' in result.parameters
+
+
+
+def test_source_extractor_recovers_parameter_defaults_and_token_rules():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/markdown/src/main/java/net/sf/okapi/filters/markdown/MarkdownFilter.java')
+    result = JavaSourceBehaviorExtractor().extract_markdown_filter(source)
+
+    translate_urls = next(rule for rule in result.parameter_rules if rule.name == 'translateUrls')
+    assert translate_urls.value_type == 'boolean'
+    assert translate_urls.default is False
+    link = next(rule for rule in result.token_rules if rule.token_type == 'LINK')
+    assert link.code_type == 'link'
+    assert link.tag_strategy == 'paired'
+    assert link.translatable is True
+
+
+def test_source_extractor_marks_code_blocks_as_protected_by_default():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/markdown/src/main/java/net/sf/okapi/filters/markdown/MarkdownFilter.java')
+    result = JavaSourceBehaviorExtractor().extract_markdown_filter(source)
+    code = next(rule for rule in result.token_rules if rule.token_type == 'CODE')
+    assert code.code_type == 'CODE'
+    assert code.tag_strategy == 'isolated'
+    assert code.translatable is False
+
+
+def test_source_extractor_extracts_openxml_filter_contract():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/openxml/src/main/java/net/sf/okapi/filters/openxml/OpenXMLFilter.java')
+    behavior = JavaSourceBehaviorExtractor().extract_openxml_filter(source)
+
+    assert behavior.class_name == 'OpenXMLFilter'
+    assert behavior.mime_type == 'application/xml'
+    assert '.docx' in behavior.extensions
+    assert 'skeleton' in behavior.features
+    assert 'translateWordHeadersFooters' in behavior.parameters
+    assert any(rule.name == 'maxAttributeSize' and rule.value_type == 'integer' for rule in behavior.parameter_rules)
+    assert behavior.superclass is None
+    assert 'open' in behavior.lifecycle_methods
+    assert behavior.framework_contract == 'net.sf.okapi.common.filters.IFilter'
+
+
+def test_source_extractor_generic_filter_contract_for_html():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+    extractor = JavaSourceBehaviorExtractor()
+    behavior = extractor.extract_generic_filter(Path("/home/frs/Projekty/Okapi-main/okapi/filters/html/src/main/java/net/sf/okapi/filters/html/HtmlFilter.java"))
+    assert behavior.class_name == "HtmlFilter"
+    assert behavior.superclass or behavior.framework_contract
+    assert "open" in behavior.lifecycle_methods
+    assert "next" in behavior.lifecycle_methods
+    skip = next(rule for rule in behavior.parameter_rules if rule.name == "skipEncodingDeclaration")
+    assert skip.value_type == "boolean"
+
+
+def test_source_extractor_generic_filter_recovers_parameter_contract_from_parameters_java():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/json/src/main/java/net/sf/okapi/filters/json/JSONFilter.java')
+    result = JavaSourceBehaviorExtractor().extract_generic_filter(source)
+
+    extract = next(rule for rule in result.parameter_rules if rule.name == 'extractStandalone')
+    exceptions = next(rule for rule in result.parameter_rules if rule.name == 'exceptions')
+    assert extract.value_type == 'boolean'
+    assert exceptions.value_type == 'string'
+    assert extract.default is False
+    assert exceptions.default == ""
+
+
+def test_source_extractor_recovers_simple_parameter_defaults_from_reset():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/json/src/main/java/net/sf/okapi/filters/json/JSONFilter.java')
+    result = JavaSourceBehaviorExtractor().extract_generic_filter(source)
+
+    extract = next(rule for rule in result.parameter_rules if rule.name == 'extractStandalone')
+    pairs = next(rule for rule in result.parameter_rules if rule.name == 'extractAllPairs')
+    use_key = next(rule for rule in result.parameter_rules if rule.name == 'useKeyAsName')
+    assert extract.default is False
+    assert pairs.default is True
+    assert use_key.default is True
+
+def test_source_extractor_recovers_parameters_actually_used_by_json_filter():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/json/src/main/java/net/sf/okapi/filters/json/JSONFilter.java')
+    result = JavaSourceBehaviorExtractor().extract_generic_filter(source)
+
+    assert 'extractStandalone' in result.used_parameters
+    assert 'extractAllPairs' in result.used_parameters
+    assert 'useKeyAsName' in result.used_parameters
+    assert 'useFullKeyPath' in result.used_parameters
+    assert 'useLeadingSlashOnKeyPath' in result.used_parameters
+    assert 'useIdStack' in result.used_parameters
+    assert 'useCodeFinder' in result.used_parameters
+    assert 'exceptions' in result.used_parameters
+    assert 'subfilter' in result.used_parameters
+    assert 'maxwidthSizeUnit' in result.used_parameters
+    assert 'noteRules' in result.used_parameters
+    assert 'extractionRules' in result.used_parameters
+    assert 'idRules' in result.used_parameters
+    assert 'genericMetaRules' in result.used_parameters
+    assert 'subfilterRules' in result.used_parameters
+    assert 'maxwidthRules' in result.used_parameters
+
+def test_source_extractor_recovers_used_markdown_parameters():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/markdown/src/main/java/net/sf/okapi/filters/markdown/MarkdownFilter.java')
+    result = JavaSourceBehaviorExtractor().extract_markdown_filter(source)
+
+    assert 'translateUrls' in result.used_parameters
+    assert 'translateInlineCodeBlocks' in result.used_parameters
+    assert 'urlToTranslatePattern' in result.used_parameters
+    assert 'useCodeFinder' in result.used_parameters
+
+
+def test_source_extractor_recovers_used_openxml_parameters():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/openxml/src/main/java/net/sf/okapi/filters/openxml/OpenXMLFilter.java')
+    result = JavaSourceBehaviorExtractor().extract_openxml_filter(source)
+
+    assert 'maxAttributeSize' in result.used_parameters
+    assert 'subfilter' in result.used_parameters
+    assert 'useCodeFinder' in result.used_parameters
+
+
+def test_source_extractor_discovers_parameters_from_method_signatures_without_literal_defaults():
+    from analyzer.metadata.source_extractor import JavaSourceBehaviorExtractor
+
+    source = Path('/home/frs/Projekty/Okapi-main/okapi/filters/openxml/src/main/java/net/sf/okapi/filters/openxml/ConditionalParameters.java')
+    result = JavaSourceBehaviorExtractor()._extract_parameter_rules(source.read_text(encoding='utf-8'))
+
+    subfilter = next(rule for rule in result if rule.name == 'subfilter')
+    assert subfilter.value_type == 'string'
+    assert subfilter.default is None

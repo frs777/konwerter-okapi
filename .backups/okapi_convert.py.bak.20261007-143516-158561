@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from importer.pipeline import OkapiConversionPipeline
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Automatycznie analizuje filtr Okapi i generuje pakiet Pythonowy."
+    )
+    parser.add_argument("jar", type=Path, help="plik JAR filtra Okapi")
+    parser.add_argument("--metadata", required=True, type=Path, help="plik filter.json")
+    parser.add_argument("--output", required=True, type=Path, help="katalog wyjściowy")
+    args = parser.parse_args()
+
+    result = OkapiConversionPipeline().convert(args.jar, args.metadata, args.output)
+    print(json.dumps({
+        "filter": result.ir.name,
+        "output_dir": str(result.output_dir),
+        "adapter_features": list(result.adapter_report.required_features),
+        "status": "generated",
+    }, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

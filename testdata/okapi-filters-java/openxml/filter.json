@@ -1,0 +1,17 @@
+{
+  "name": "openxml",
+  "entry_class": "net.sf.okapi.filters.openxml.OpenXMLFilter",
+  "dependencies": [
+    {
+      "name": "TwelveMonkeys Common IO",
+      "artifact": "com.twelvemonkeys.common:common-io:3.12.0",
+      "classes": [
+        "com.twelvemonkeys.io.ole2.CompoundDocument",
+        "com.twelvemonkeys.io.ole2.CorruptDocumentException"
+      ],
+      "urls": [
+        "https://central.sonatype.com/artifact/com.twelvemonkeys.common/common-io"
+      ]
+    }
+  ]
+}

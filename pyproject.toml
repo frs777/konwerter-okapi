@@ -1,0 +1,10 @@
+[project]
+name = "konwerter-okapi"
+version = "0.1.0"
+description = "Niezależny Pythonowy rdzeń filtrów Okapi oraz narzędzia analizy i migracji"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"

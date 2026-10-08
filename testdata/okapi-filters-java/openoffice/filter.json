@@ -1,0 +1,4 @@
+{
+  "name": "openoffice",
+  "entry_class": "net.sf.okapi.filters.openoffice.OpenOfficeFilter"
+}

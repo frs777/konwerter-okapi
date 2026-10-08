@@ -1,0 +1,4 @@
+{
+  "name": "json",
+  "entry_class": "net.sf.okapi.filters.json.JSONFilter"
+}

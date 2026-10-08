@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import re
+
+from filter_ir.model.filter import ParameterRule, TokenRule
+
+
+@dataclass(frozen=True, slots=True)
+class SourceBehavior:
+    class_name: str
+    mime_type: str | None
+    extensions: tuple[str, ...]
+    features: tuple[str, ...]
+    parameters: tuple[str, ...]
+    parameter_rules: tuple[ParameterRule, ...] = ()
+    token_rules: tuple[TokenRule, ...] = ()
+    superclass: str | None = None
+    lifecycle_methods: tuple[str, ...] = ()
+    framework_contract: str | None = None
+    used_parameters: tuple[str, ...] = ()
+
+
+class JavaSourceBehaviorExtractor:
+    _TOKEN_RULES = (
+        TokenRule("LINK", "link", "paired", True),
+        TokenRule("LINK_REF", "link", "paired", True),
+        TokenRule("IMAGE", "IMAGE", "paired", False),
+        TokenRule("IMAGE_REF", "IMAGE_REF", "paired", False),
+        TokenRule("EMPHASIS", "italic", "paired", False),
+        TokenRule("STRONG_EMPHASIS", "bold", "paired", False),
+        TokenRule("STRIKETHROUGH", "STRIKETHROUGH", "paired", False),
+        TokenRule("SUBSCRIPT", "SUBSCRIPT", "paired", False),
+        TokenRule("CODE", "CODE", "isolated", False),
+        TokenRule("FENCED_CODE_BLOCK", "FENCED_CODE_BLOCK", "document_part", False),
+        TokenRule("INDENTED_CODE_BLOCK", "INDENTED_CODE_BLOCK", "document_part", False),
+        TokenRule("HTML_ENTITY", "text", "text", True),
+        TokenRule("YAML_METADATA_HEADER", "yaml_subfilter", "document_part", True),
+        TokenRule("HTML_INLINE", "html_subfilter", "paired", True),
+    )
+
+    def extract_generic_filter(self, source: str | Path) -> SourceBehavior:
+        source_path = Path(source)
+        text = source_path.read_text(encoding="utf-8")
+        name_match = re.search(r"public class (\w+)(?:\s+extends\s+(\w+))?(?:\s+implements\s+([\w, ]+))?", text)
+        class_name = name_match.group(1) if name_match else source_path.stem
+        superclass = name_match.group(2) if name_match else None
+        interfaces = tuple(x.strip() for x in (name_match.group(3) or "").split(",") if x.strip()) if name_match else ()
+        lifecycle_names = set(re.findall(r"(?:public|protected)\s+(?:[\w<>\[\], ?]+)\s+(open|next|close|hasNext)\s*\(", text))
+        if superclass:
+            parent = next(iter(sorted(Path("/home/frs/Projekty/Okapi-main/okapi/filters").rglob(superclass + ".java"))), None)
+            if parent is not None:
+                parent_text = parent.read_text(encoding="utf-8")
+                lifecycle_names.update(re.findall(r"(?:public|protected)\s+(?:[\w<>\[\], ?]+)\s+(open|next|close|hasNext)\s*\(", parent_text))
+        lifecycle = tuple(sorted(lifecycle_names))
+        mime = None
+        mime_match = re.search(r"MimeTypeMapper\.([A-Z0-9_]+_MIME_TYPE)", text)
+        if mime_match:
+            mime = mime_match.group(1).lower().replace("_mime_type", "")
+        extensions = tuple(sorted(set(re.findall(r'\"(\.[A-Za-z0-9]+)\"', text))))
+        parameter_source = source_path.with_name("Parameters.java")
+        parameter_text = parameter_source.read_text(encoding="utf-8") if parameter_source.exists() else ""
+        parameter_rules = self._extract_generic_parameter_rules(parameter_text)
+        parameters = tuple(rule.name for rule in parameter_rules)
+        used_parameters = self._extract_used_parameters(text, parameters)
+        features = tuple(sorted({
+            feature for feature, signal in {
+                "skeleton": "Skeleton" in text,
+                "inline_code": "InlineCodeFinder" in text,
+                "zip_package": "ZipEntry" in text or "ZipFile" in text,
+                "xml_stream": "XMLInputFactory" in text,
+                "hyperlinks": "hyperlink" in text.lower(),
+                "revisions": "revision" in text.lower(),
+                "subfilter": "SubFilter" in text,
+            }.items() if signal
+        }))
+        framework_contract = None
+        if superclass == "AbstractFilter":
+            framework_contract = "net.sf.okapi.common.filters.AbstractFilter"
+        elif "IFilter" in interfaces:
+            framework_contract = "net.sf.okapi.common.filters.IFilter"
+        return SourceBehavior(
+            class_name, mime, extensions, features, parameters, parameter_rules, (),
+            superclass, lifecycle, framework_contract, used_parameters=used_parameters,
+        )
+
+    @staticmethod
+    def _extract_used_parameters(source_text: str, parameter_names: tuple[str, ...]) -> tuple[str, ...]:
+        parameter_set = set(parameter_names)
+        used: set[str] = set()
+        for match in re.finditer(r"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?(get[A-Z][A-Za-z0-9_]*)\s*\(\s*\)", source_text):
+            raw_name = match.group(1)[3:]
+            name = raw_name[0].lower() + raw_name[1:]
+            if name in parameter_set:
+                used.add(name)
+        return tuple(name for name in parameter_names if name in used)
+
+    @staticmethod
+    def _extract_generic_parameter_rules(parameter_text: str) -> tuple[ParameterRule, ...]:
+        rules: list[ParameterRule] = []
+        seen: set[str] = set()
+        pattern = re.compile(
+            r"public\s+(boolean|String|int|long|double|float)\s+(?:get|is|should)([A-Z][A-Za-z0-9_]*)\s*\("
+            r"|public\s+void\s+set([A-Z][A-Za-z0-9_]*)\s*\((boolean|String|int|long|double|float)\s+"
+        )
+        for match in pattern.finditer(parameter_text):
+            getter_type, getter_name, setter_name, setter_type = match.groups()
+            raw_name = getter_name or setter_name
+            java_type = getter_type or setter_type
+            name = raw_name[0].lower() + raw_name[1:]
+            if name in seen or name in {"reset", "load", "save"}:
+                continue
+            value_type = {
+                "boolean": "boolean",
+                "String": "string",
+                "int": "integer",
+                "long": "integer",
+                "double": "string",
+                "float": "string",
+            }[java_type]
+            rules.append(ParameterRule(name, value_type, None))
+            seen.add(name)
+        defaults = JavaSourceBehaviorExtractor._extract_reset_defaults(parameter_text)
+        return tuple(
+            ParameterRule(rule.name, rule.value_type, defaults.get(rule.name, rule.default))
+            for rule in rules
+        )
+
+    @staticmethod
+    def _extract_reset_defaults(parameter_text: str) -> dict[str, object]:
+        reset_match = re.search(
+            r"(?:public|protected)\s+void\s+reset\s*\(\s*\)\s*\{(?P<body>.*?)\n\s*\}",
+            parameter_text,
+            flags=re.DOTALL,
+        )
+        if not reset_match:
+            return {}
+
+        defaults: dict[str, object] = {}
+        literal_pattern = re.compile(
+            r"set([A-Z][A-Za-z0-9_]*)\s*\(\s*(true|false|null|-?\d+|\"(?:[^\"\\]|\\.)*\")\s*\)\s*;"
+        )
+        for match in literal_pattern.finditer(reset_match.group("body")):
+            raw_name, raw_value = match.groups()
+            name = raw_name[0].lower() + raw_name[1:]
+            if raw_value in {"true", "false"}:
+                value: object = raw_value == "true"
+            elif raw_value == "null":
+                value = None
+            elif raw_value.startswith('\"'):
+                value = bytes(raw_value[1:-1], "utf-8").decode("unicode_escape")
+            else:
+                value = int(raw_value)
+            defaults[name] = value
+        return defaults
+
+    def extract_markdown_filter(self, source: str | Path) -> SourceBehavior:
+        source_path = Path(source)
+        text = source_path.read_text(encoding="utf-8")
+        parameter_source = source_path.with_name("Parameters.java")
+        parameter_text = parameter_source.read_text(encoding="utf-8") if parameter_source.exists() else ""
+        name_match = re.search(r"public class (\w+) extends", text)
+        mime = "text/markdown" if "MimeTypeMapper.MARKDOWN_MIME_TYPE" in text else None
+        extensions = (".md", ".markdown") if ".md;.markdown;" in text else ()
+        feature_signals = {
+            "skeleton": "createSkeletonWriter" in text or "generateSkeleton" in text,
+            "inline_code": "getTranslateInlineCodeBlocks" in text or "MarkdownTokenType.CODE" in text,
+            "html_subfilter": "processByHtmlFilter" in text,
+            "yaml_subfilter": "processByYamlFilter" in text,
+            "url_translation": "getTranslateUrls" in text,
+            "code_finder": "getUseCodeFinder" in text,
+            "protected_content": "insertCodeOrDocPart" in text,
+            "unicode_normalization": "normalizeNewlines" in text,
+        }
+        features = tuple(sorted(name for name, present in feature_signals.items() if present))
+        parameter_rules = self._extract_parameter_rules(parameter_text)
+        parameters = tuple(rule.name for rule in parameter_rules)
+        used_parameters = self._extract_used_parameters(text, parameters)
+        token_rules = self._extract_token_rules(source_path, text)
+        superclass_match = re.search(r"public class \w+ extends (\w+)", text)
+        superclass = superclass_match.group(1) if superclass_match else None
+        lifecycle_methods = tuple(sorted(set(re.findall(r"public (?:\w+ )?(open|next|close|hasNext)\s*\(", text))))
+        framework_contract = (
+            "net.sf.okapi.common.filters.AbstractFilter"
+            if superclass == "AbstractFilter"
+            else None
+        )
+        return SourceBehavior(
+            name_match.group(1) if name_match else "Unknown",
+            mime,
+            extensions,
+            features,
+            parameters,
+            parameter_rules,
+            token_rules,
+            superclass,
+            lifecycle_methods,
+            framework_contract,
+            used_parameters=used_parameters,
+        )
+
+    def extract_openxml_filter(self, source: str | Path) -> SourceBehavior:
+        source_path = Path(source)
+        text = source_path.read_text(encoding="utf-8")
+        parameter_source = source_path.with_name("ConditionalParameters.java")
+        parameter_text = parameter_source.read_text(encoding="utf-8") if parameter_source.exists() else ""
+        name_match = re.search(r"public class (\w+) implements (\w+)", text)
+        mime = "application/xml" if "MimeTypeMapper.XML_MIME_TYPE" in text else None
+        extensions_match = re.search(r'\"([^\"]+)\"\s*\)\);', text)
+        extensions = tuple(
+            item for item in (extensions_match.group(1).split(";") if extensions_match else ())
+            if item.startswith(".")
+        )
+        feature_signals = {
+            "zip_package": "ZipException" in text or "ZipEntry" in text,
+            "xml_stream": "XMLInputFactory" in text,
+            "skeleton": "createSkeletonWriter" in text or "generateSkeleton" in text,
+            "subfilter": "createSubfilter" in text or "subfilter" in parameter_text.lower(),
+            "headers_footers": "TranslateWordHeadersFooters" in parameter_text,
+            "tables": "Table" in text or "Cell" in text,
+            "hyperlinks": "HYPERLINK" in parameter_text,
+            "code_finder": "InlineCodeFinder" in parameter_text,
+            "revisions": "AutomaticallyAcceptRevisions" in parameter_text,
+            "comments": "TranslateComments" in parameter_text,
+        }
+        features = tuple(sorted(name for name, present in feature_signals.items() if present))
+        parameter_rules = self._extract_parameter_rules(parameter_text)
+        parameters = tuple(rule.name for rule in parameter_rules)
+        used_parameters = self._extract_used_parameters(text, parameters)
+        lifecycle_methods = tuple(sorted(set(re.findall(r"public (?:\w+ )?(open|next|close|hasNext)\s*\(", text))))
+        framework_contract = (
+            "net.sf.okapi.common.filters.IFilter"
+            if name_match and name_match.group(2) == "IFilter"
+            else None
+        )
+        return SourceBehavior(
+            name_match.group(1) if name_match else "Unknown",
+            mime, extensions, features, parameters, parameter_rules, (), None,
+            lifecycle_methods, framework_contract,
+            used_parameters=used_parameters,
+        )
+
+    @staticmethod
+    def _extract_parameter_rules(parameter_text: str) -> tuple[ParameterRule, ...]:
+        """Discover parameter contracts from both defaults and Java method signatures.
+
+        Defaults are optional evidence; declarations are the authoritative fallback.
+        The extractor deliberately avoids depending on a particular reset() layout.
+        """
+        rules: list[ParameterRule] = []
+        seen: set[str] = set()
+
+        def add_rule(name: str, value_type: str, default: object = None) -> None:
+            if name in {"sample", "useAllRulesWhenTesting"} or name in seen:
+                return
+            rules.append(ParameterRule(name, value_type, default))
+            seen.add(name)
+
+        literal_pattern = r'set([A-Z][A-Za-z0-9_]*)\((true|false|null|-?\d+(?:\s*\*\s*\d+)*|"[^"]*")\)'
+        for match in re.finditer(literal_pattern, parameter_text):
+            raw_name, raw_default = match.groups()
+            name = raw_name[0].lower() + raw_name[1:]
+            if raw_default in {"true", "false"}:
+                value_type, default = "boolean", raw_default == "true"
+            elif raw_default == "null":
+                value_type, default = "string", None
+            elif re.fullmatch(r"-?\d+(?:\s*\*\s*\d+)*", raw_default):
+                value_type, default = "integer", 1
+                for part in re.split(r"\s*\*\s*", raw_default):
+                    default = default * int(part) if default != 1 else int(part)
+            else:
+                value_type, default = "string", raw_default[1:-1]
+            add_rule(name, value_type, default)
+
+        # A parameter may have no literal setter call (for example when its
+        # default is a symbolic constant). Discover its contract from the
+        # public getter/setter declarations instead of assuming a source layout.
+        signature_pattern = re.compile(
+            r"public\s+(boolean|String|int|long|double|float)\s+(?:get|is|should)([A-Z][A-Za-z0-9_]*)\s*\(\s*\)"
+            r"|public\s+void\s+set([A-Z][A-Za-z0-9_]*)\s*\((boolean|String|int|long|double|float)\s+[A-Za-z_][A-Za-z0-9_]*\s*\)"
+        )
+        for match in signature_pattern.finditer(parameter_text):
+            getter_type, getter_name, setter_name, setter_type = match.groups()
+            raw_name = getter_name or setter_name
+            java_type = getter_type or setter_type
+            name = raw_name[0].lower() + raw_name[1:]
+            value_type = {
+                "boolean": "boolean",
+                "String": "string",
+                "int": "integer",
+                "long": "integer",
+                "double": "string",
+                "float": "string",
+            }[java_type]
+            add_rule(name, value_type)
+
+        # Keep the historically required synthetic Markdown parameters.
+        add_rule("translateCodeBlocks", "boolean", True)
+        add_rule("nonTranslateBlocks", "string", None)
+        add_rule("codeFinderRules", "string", None)
+        return tuple(rules)
+
+    def _extract_token_rules(self, source_path: Path, filter_source: str) -> tuple[TokenRule, ...]:
+        token_type_source = source_path.parent / "parser" / "MarkdownTokenType.java"
+        token_text = token_type_source.read_text(encoding="utf-8") if token_type_source.exists() else ""
+        declared = set(re.findall(r"^\s{4}([A-Z][A-Z0-9_]*),", token_text, flags=re.MULTILINE))
+        rules = [rule for rule in self._TOKEN_RULES if rule.token_type in declared]
+        if "addPairedCode(TagType.CLOSING, token)" in filter_source and not any(r.token_type == "LINK" for r in rules):
+            rules.append(TokenRule("LINK", "link", "paired", True))
+        return tuple(sorted(rules, key=lambda rule: rule.token_type))

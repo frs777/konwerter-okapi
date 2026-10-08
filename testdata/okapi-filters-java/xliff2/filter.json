@@ -1,0 +1,4 @@
+{
+  "name": "xliff2",
+  "entry_class": "net.sf.okapi.filters.xliff2.XLIFF2Filter"
+}

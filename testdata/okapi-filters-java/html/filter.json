@@ -1,0 +1,4 @@
+{
+  "name": "html",
+  "entry_class": "net.sf.okapi.filters.html.HtmlFilter"
+}

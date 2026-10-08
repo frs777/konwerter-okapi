@@ -1,0 +1,4 @@
+{
+  "name": "epub",
+  "entry_class": "net.sf.okapi.filters.epub.EpubFilter"
+}
