@@ -30,3 +30,7 @@ python tools/okapi_convert.py \
 
 Pipeline tworzy `filter.py`, `filter_ir.json`, `conversion_report.json` i `__init__.py`. Jest to fundament automatycznej migracji: analiza i IR są automatyczne, natomiast zachowanie parsera/specyficzne adaptery filtra są jeszcze rozwijane i muszą być potwierdzane testami round-trip oraz differential testing.
 
+
+## Dokumentacja
+
+Indeks dokumentacji projektu: [`docs/README.md`](docs/README.md). Zawiera architekturę, narzędzia analizy JAR/Java, procedury testów różnicowych i inwentaryzację natywnych filtrów Python.
