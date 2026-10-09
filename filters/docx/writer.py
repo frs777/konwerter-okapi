@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import stat
+import tempfile
 from zipfile import ZIP_DEFLATED, ZipFile
 import shutil
 from xml.etree.ElementTree import Element, SubElement, register_namespace, tostring, fromstring
@@ -112,13 +115,30 @@ class DocxWriter:
                 changes_by_part.setdefault(part, []).append(unit)
 
         path = Path(target)
-        with ZipFile(source_path, "r") as source, ZipFile(path, "w", ZIP_DEFLATED) as output:
-            for info in source.infolist():
-                data = source.read(info.filename)
-                part_units = changes_by_part.get(info.filename)
-                if part_units and (info.filename.endswith(".xml") or info.filename.endswith(".rels")):
-                    data = self._patch_source_xml(data, part_units)
-                output.writestr(info, data)
+        in_place = path.resolve() == source_path.resolve()
+        write_path = path
+        if in_place:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+            )
+            os.close(descriptor)
+            write_path = Path(temporary_name)
+
+        try:
+            with ZipFile(source_path, "r") as source, ZipFile(write_path, "w", ZIP_DEFLATED) as output:
+                for info in source.infolist():
+                    data = source.read(info.filename)
+                    part_units = changes_by_part.get(info.filename)
+                    if part_units and (info.filename.endswith(".xml") or info.filename.endswith(".rels")):
+                        data = self._patch_source_xml(data, part_units)
+                    output.writestr(info, data)
+            if in_place:
+                os.chmod(write_path, stat.S_IMODE(source_path.stat().st_mode))
+                os.replace(write_path, path)
+        except BaseException:
+            if in_place:
+                write_path.unlink(missing_ok=True)
+            raise
 
     def _patch_source_xml(self, data: bytes, units: list[TextUnit]) -> bytes:
         root = fromstring(data)

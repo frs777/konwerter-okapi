@@ -274,7 +274,7 @@ def test_writer_round_trip_preserves_nested_complex_fields_in_real_stream(tmp_pa
     assert fields[0].nested[0].result == ("7",)
 
 
-def test_reader_integrates_complex_field_stream_across_text_units():
+def test_reader_integrates_complex_field_stream_across_text_units(tmp_path):
     from filters.docx.reader import DocxReader
     from filters.docx.writer import DocxWriter
     from core.document.model import Code, TextFragment, TextUnit
@@ -290,7 +290,7 @@ def test_reader_integrates_complex_field_stream_across_text_units():
         Event(EventType.TEXT_UNIT, TextUnit("1", (TextFragment((Code("begin", "field_char"), Code(" PAGE ", "field_instruction"), Code("separate", "field_char"), "1")),))),
         Event(EventType.TEXT_UNIT, TextUnit("2", (TextFragment((Code("end", "field_char"),)),))),
     ]
-    target = __import__("pathlib").Path("/tmp/complex-field-reader-integration.docx")
+    target = tmp_path / "complex-field-reader-integration.docx"
     DocxWriter().write(events, target)
     roundtrip_reader = DocxReader()
     list(roundtrip_reader.read(target))

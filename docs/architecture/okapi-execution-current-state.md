@@ -55,7 +55,7 @@ Dostępne są dwa backendy:
 
 `NativeFilterBackend` obsługuje dwa warianty wejścia istniejących filtrów: ścieżkę pliku oraz treść tekstową, wybieraną jawnie przez `source_modes`. Obsługuje również oba spotkane kontrakty `write()`: z parametrem `target` oraz zwracające gotowy tekst/bajty.
 
-`execution/native_catalog.py` centralizuje potwierdzone kontrakty natywnych filtrów i buduje jednocześnie `FilterRegistry` oraz `NativeFilterBackend`. Automatyczny katalog obejmuje obecnie TXT, DOCX, Markdown, HTML, JSON, YAML, EPUB, XLIFF 1.2 i XLIFF 2.x. Tryb wejścia jest jawny: tekst dla TXT/Markdown/JSON/YAML/XLIFF oraz ścieżka dla DOCX/HTML/EPUB. DOCX korzysta z adaptera łączącego istniejące `DocxReader` i `DocxWriter` z jednolitym kontraktem execution.
+`execution/native_catalog.py` centralizuje potwierdzone kontrakty natywnych filtrów i buduje jednocześnie `FilterRegistry` oraz `NativeFilterBackend`. Automatyczny katalog obejmuje obecnie TXT, DOCX, Markdown, HTML, JSON, YAML, EPUB, XLIFF 1.2 i XLIFF 2.x. Tryb wejścia jest jawny: tekst dla TXT/Markdown/JSON/YAML/XLIFF oraz ścieżka dla DOCX/HTML/EPUB. DOCX korzysta z adaptera łączącego istniejące `DocxReader` i `DocxWriter` z jednolitym kontraktem execution. Writer kopiuje oryginalny pakiet i patchuje wybrane części XML; przy zapisie pod ścieżkę źródłową buduje pakiet tymczasowy i atomowo podmienia plik, aby nie obciąć archiwum ZIP otwartego do odczytu.
 
 XLIFF 1.2 i XLIFF 2.x współdzielą `.xlf/.xliff`, dlatego resolver stosuje content-aware detection namespace XML, a jawne `format`/`filter_id` zachowują pierwszeństwo.
 
@@ -160,16 +160,16 @@ FilterExecutionPort
 
 ## Aktualizacja zachowania XLIFF — 2026-10-09
 
-Model `TextUnit` przechowuje opcjonalne `target_fragments` niezależnie od źródłowych `fragments`. Natywny XLIFF 1.2 odczytuje `<source>` i `<target>` oddzielnie. Natywny XLIFF 2.x odczytuje wszystkie `<segment>` w obrębie `<unit>`, zachowuje `unit_id`, `segment_id` i indeks segmentu w metadanych oraz reprezentuje zagnieżdżone inline codes przez `Markup.start`/`Markup.end`; puste elementy pozostają `Markup.empty`. Oba writer'y obsługują nieprefiksowane tagi i lokalne nazwy tagów z prefiksem namespace oraz tworzą brakujący `<target>`, jeśli model dostarcza tłumaczenie.
+Model `TextUnit` przechowuje opcjonalne `target_fragments` niezależnie od źródłowych `fragments`. Natywny XLIFF 1.2 odczytuje `<source>` i `<target>` oddzielnie. Natywny XLIFF 2.x odczytuje wszystkie `<segment>` w obrębie `<unit>`, zachowuje `unit_id`, `segment_id` i indeks segmentu w metadanych oraz reprezentuje zagnieżdżone inline codes przez `Markup.start`/`Markup.end`; puste elementy w obu wersjach pozostają `Markup.empty`. Oba writer'y obsługują nieprefiksowane tagi i lokalne nazwy tagów z prefiksem namespace oraz tworzą brakujący `<target>`, jeśli model dostarcza tłumaczenie.
 
-To nadal implementacja częściowa. Writer XLIFF używa skanowania tekstowego oryginalnego XML, aby ograniczyć niezamierzone formatowanie zmian, dlatego wymaga dalszych testów dla wielu segmentów bez ID, komentarzy/CDATA, nietypowego formatowania tagów i dużych zmian długości treści. Nie deklarujemy jeszcze pełnej zgodności z Okapi.
+To nadal implementacja częściowa. Writer XLIFF używa skanowania tekstowego oryginalnego XML, aby ograniczyć niezamierzone formatowanie zmian. Gdy source nie zmienił się semantycznie, writer pozostawia jego oryginalny fragment bez zmian, co zachowuje komentarze, CDATA i formatowanie podczas aktualizacji targetu. Po zmianie długości source granice kontenera i source są wyznaczane ponownie przed lokalizacją targetu. Pozostają do sprawdzenia m.in. segmenty bez ID, komentarze/CDATA wewnątrz edytowanej treści, nietypowe formatowanie tagów i trudniejsze zagnieżdżenia. Nie deklarujemy jeszcze pełnej zgodności z Okapi.
 
 ## Evidence
 
 Świeża pełna weryfikacja z 2026-10-09 po poprawkach modelu i XLIFF:
 
 ```text
-full suite: 305 passed in 63.93s
+full suite: 311 passed in 63.31s
 compileall: OK
 ```
 

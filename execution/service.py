@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Mapping
 
@@ -32,7 +33,9 @@ class ExecutionService:
         output_path: Path,
         operation: str = "translate",
     ) -> ExecutionResult:
-        descriptor = self.resolver.resolve(request.input_path)
+        descriptor = self.resolver.resolve(
+            request.input_path, format=request.format, filter_id=request.filter_id
+        )
         backend = self.backends.get(descriptor.backend_id)
         if backend is None:
             raise ValueError(
@@ -45,9 +48,13 @@ class ExecutionService:
         self.coordinator.transition(job.job_id, JobState.OPENING)
         self.coordinator.transition(job.job_id, JobState.EXTRACTING)
 
+        effective_request = request
+        if request.filter_id is None:
+            effective_request = replace(request, filter_id=descriptor.id)
+
         try:
             result = backend.execute(
-                request,
+                effective_request,
                 job_id=job.job_id,
                 output_path=output_path,
             )

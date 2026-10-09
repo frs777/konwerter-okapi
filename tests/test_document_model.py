@@ -17,6 +17,16 @@ def test_text_unit_contains_fragments_without_flattening_codes():
     assert isinstance(unit.fragments[0].parts[1], Code)
 
 
+def test_text_unit_can_preserve_distinct_target_fragments():
+    source = (TextFragment(("Hello",)),)
+    target = (TextFragment(("Cześć",)),)
+
+    unit = TextUnit(id="u1", fragments=source, target_fragments=target)
+
+    assert unit.fragments == source
+    assert unit.target_fragments == target
+
+
 def test_skeleton_is_structural():
     skeleton = Skeleton(parts=("<p>", "</p>"))
 

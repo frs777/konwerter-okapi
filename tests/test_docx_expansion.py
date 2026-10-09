@@ -94,11 +94,11 @@ def test_docx_reader_extracts_comments_as_document_parts():
     assert any("comment" in "".join(str(x) for x in u.fragments[0].parts).lower() for u in units if (u.metadata or {}).get("part") == "comment" and (u.metadata or {}).get("comment_id") == "2")
 
 
-def test_docx_reader_skips_hidden_runs_by_default():
+def test_docx_reader_skips_hidden_runs_by_default(tmp_path):
     from zipfile import ZipFile
     from filters.docx.reader import DocxReader
 
-    target = Path("/tmp/docx-hidden-default.docx")
+    target = tmp_path / "docx-hidden-default.docx"
     document = '''<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>Ukryty</w:t></w:r><w:r><w:t>Widoczny</w:t></w:r></w:p><w:sectPr/></w:body></w:document>'''
     with ZipFile(target, "w") as archive:
         archive.writestr("word/document.xml", document)
@@ -109,11 +109,11 @@ def test_docx_reader_skips_hidden_runs_by_default():
     assert "Widoczny" in strings
 
 
-def test_docx_reader_can_include_hidden_runs_when_enabled():
+def test_docx_reader_can_include_hidden_runs_when_enabled(tmp_path):
     from zipfile import ZipFile
     from filters.docx.reader import DocxReader
 
-    target = Path("/tmp/docx-hidden-enabled.docx")
+    target = tmp_path / "docx-hidden-enabled.docx"
     document = '''<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>Ukryty</w:t></w:r><w:r><w:t>Widoczny</w:t></w:r></w:p><w:sectPr/></w:body></w:document>'''
     with ZipFile(target, "w") as archive:
         archive.writestr("word/document.xml", document)
@@ -256,11 +256,11 @@ def test_docx_reader_extracts_external_hyperlinks_from_auxiliary_part_relationsh
     assert [u.fragments[0].parts[0] for u in links] == ["https://example.test/header"]
     assert links[0].metadata["source_part_name"] == "word/_rels/header1.xml.rels"
 
-def test_docx_reader_preserves_direct_run_properties():
+def test_docx_reader_preserves_direct_run_properties(tmp_path):
     from zipfile import ZipFile
     from filters.docx.reader import DocxReader
 
-    target = Path("/tmp/docx-run-properties.docx")
+    target = tmp_path / "docx-run-properties.docx"
     document = '''<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:b/><w:i/><w:u w:val="single"/><w:color w:val="FF0000"/><w:sz w:val="28"/><w:rFonts w:ascii="Arial"/></w:rPr><w:t>Styled</w:t></w:r><w:r><w:t>Plain</w:t></w:r></w:p><w:sectPr/></w:body></w:document>'''
     with ZipFile(target, "w") as archive:
         archive.writestr("word/document.xml", document)

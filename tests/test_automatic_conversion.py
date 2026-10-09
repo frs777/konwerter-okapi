@@ -455,6 +455,212 @@ def test_generated_xliff_filter_reads_and_round_trips_source_text(tmp_path: Path
     assert module.XLIFFFilter().round_trip(source) == source
 
 
+def test_native_xliff12_writer_supports_prefixed_namespace_tags():
+    from core.document.model import TextFragment
+    from core.events.model import Event, EventType
+    from filters.xliff.filter import XLIFFFilter
+
+    source = '<x:xliff xmlns:x="urn:oasis:names:tc:xliff:document:1.2"><x:file><x:body><x:trans-unit id="u"><x:source>Hello</x:source><x:target>Witaj</x:target></x:trans-unit></x:body></x:file></x:xliff>'
+    filter_instance = XLIFFFilter()
+    events = tuple(filter_instance.read(source))
+    original = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+    translated = original.__class__(original.id, original.fragments, original.metadata, (TextFragment(("Cześć",)),))
+    output = filter_instance.write(tuple(Event(EventType.TEXT_UNIT, translated) if event.type is EventType.TEXT_UNIT else event for event in events))
+
+    assert "<x:source>Hello</x:source>" in output
+    assert "<x:target>Cześć</x:target>" in output
+
+
+def test_native_xliff_preserves_and_writes_distinct_target_content():
+    from core.events.model import EventType
+    from filters.xliff.filter import XLIFFFilter
+
+    source = '<?xml version="1.0"?><xliff xmlns="urn:oasis:names:tc:xliff:document:1.2"><file source-language="en" target-language="pl"><body><trans-unit id="1"><source>Hello</source><target>Witaj</target></trans-unit></body></file></xliff>'
+    filter_instance = XLIFFFilter()
+    events = list(filter_instance.read(source))
+    unit = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+
+    assert unit.target_fragments is not None
+    assert unit.target_fragments[0].parts == ("Witaj",)
+
+    translated = unit.__class__(
+        unit.id,
+        unit.fragments,
+        unit.metadata,
+        target_fragments=(unit.target_fragments[0].__class__(("Cześć",)),),
+    )
+    from core.events.model import Event
+    output = filter_instance.write((events[0], Event(EventType.TEXT_UNIT, translated), events[-1]))
+    assert "<source>Hello</source>" in output
+    assert "<target>Cześć</target>" in output
+
+
+def test_native_xliff2_writer_supports_prefixed_namespace_tags():
+    from core.document.model import TextFragment
+    from core.events.model import Event, EventType
+    from filters.xliff2.filter import XLIFF2Filter
+
+    source = '<x:xliff xmlns:x="urn:oasis:names:tc:xliff:document:2.0"><x:file id="f"><x:unit id="u"><x:segment id="s"><x:source>Hello</x:source><x:target>Witaj</x:target></x:segment></x:unit></x:file></x:xliff>'
+    filter_instance = XLIFF2Filter()
+    events = tuple(filter_instance.read(source))
+    original = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+    translated = original.__class__(original.id, original.fragments, original.metadata, (TextFragment(("Cześć",)),))
+    output = filter_instance.write(tuple(Event(EventType.TEXT_UNIT, translated) if event.type is EventType.TEXT_UNIT else event for event in events))
+
+    assert "<x:source>Hello</x:source>" in output
+    assert "<x:target>Cześć</x:target>" in output
+
+
+def test_native_xliff2_inserts_target_when_translation_is_added_to_source_only_segment():
+    from core.document.model import TextFragment
+    from core.events.model import Event, EventType
+    from filters.xliff2.filter import XLIFF2Filter
+
+    source = '<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0"><file id="f"><unit id="u"><segment id="s1"><source>Hello</source></segment></unit></file></xliff>'
+    filter_instance = XLIFF2Filter()
+    events = tuple(filter_instance.read(source))
+    original = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+    translated = original.__class__(original.id, original.fragments, original.metadata, (TextFragment(("Witaj",)),))
+    output = filter_instance.write(tuple(Event(EventType.TEXT_UNIT, translated) if event.type is EventType.TEXT_UNIT else event for event in events))
+
+    assert "<source>Hello</source>" in output
+    assert "<target>Witaj</target>" in output
+
+
+def test_native_xliff2_reads_and_updates_each_segment_in_a_unit():
+    from core.document.model import TextFragment
+    from core.events.model import Event, EventType
+    from filters.xliff2.filter import XLIFF2Filter
+
+    source = '<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0"><file id="f"><unit id="u"><segment id="s1"><source>First</source><target>Uno</target></segment><segment id="s2"><source>Second</source><target>Dos</target></segment></unit></file></xliff>'
+    filter_instance = XLIFF2Filter()
+    events = tuple(filter_instance.read(source))
+    units = [event.resource for event in events if event.type is EventType.TEXT_UNIT]
+
+    assert len(units) == 2
+    assert [unit.fragments[0].parts for unit in units] == [("First",), ("Second",)]
+    second = units[1]
+    translated = second.__class__(second.id, second.fragments, second.metadata, (TextFragment(("Deuxième",)),))
+    changed_events = tuple(Event(EventType.TEXT_UNIT, translated) if event.type is EventType.TEXT_UNIT and event.resource.id == second.id else event for event in events)
+    output = filter_instance.write(changed_events)
+
+    assert "<target>Uno</target>" in output
+    assert "<target>Deuxième</target>" in output
+    assert "<target>Dos</target>" not in output
+
+
+def test_native_xliff12_represents_empty_inline_codes_as_empty_markup():
+    from core.document.model import Markup
+    from core.events.model import EventType
+    from filters.xliff.filter import XLIFFFilter
+
+    source = '<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2"><file><body><trans-unit id="u"><source>Call <ph id="1"/> now</source></trans-unit></body></file></xliff>'
+    events = tuple(XLIFFFilter().read(source))
+    unit = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+    parts = unit.fragments[0].parts
+
+    assert "Call " in parts
+    assert " now" in parts
+    assert any(isinstance(part, Markup) and part.kind == "empty" and part.name == "ph" for part in parts)
+    assert not any(isinstance(part, Markup) and part.kind == "start" and part.name == "ph" for part in parts)
+
+
+def test_native_xliff2_preserves_nested_inline_markup_and_text():
+    from core.document.model import Markup
+    from core.events.model import EventType
+    from filters.xliff2.filter import XLIFF2Filter
+
+    source = '<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0"><file id="f"><unit id="1"><segment><source>Say <pc id="1">very <ph id="2"/> well</pc>!</source></segment></unit></file></xliff>'
+    events = tuple(XLIFF2Filter().read(source))
+    unit = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+    parts = unit.fragments[0].parts
+
+    assert "very " in parts
+    assert " well" in parts
+    assert any(isinstance(part, Markup) and part.kind == "start" and part.name == "pc" for part in parts)
+    assert any(isinstance(part, Markup) and part.kind == "end" and part.name == "pc" for part in parts)
+    assert any(isinstance(part, Markup) and part.kind == "empty" and part.name == "ph" for part in parts)
+
+
+def test_native_xliff2_preserves_and_writes_distinct_target_content():
+    from core.document.model import TextFragment
+    from core.events.model import Event, EventType
+    from filters.xliff2.filter import XLIFF2Filter
+
+    source = '<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0"><file id="f"><unit id="1"><segment><source>Hello</source><target>Witaj</target></segment></unit></file></xliff>'
+    filter_instance = XLIFF2Filter()
+    events = list(filter_instance.read(source))
+    unit = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+
+    assert unit.target_fragments is not None
+    assert unit.target_fragments[0].parts == ("Witaj",)
+    translated = unit.__class__(unit.id, unit.fragments, unit.metadata, (TextFragment(("Cześć",)),))
+    output = filter_instance.write((events[0], Event(EventType.TEXT_UNIT, translated), events[-1]))
+    assert "<source>Hello</source>" in output
+    assert "<target>Cześć</target>" in output
+
+
+def test_native_xliff2_round_trip_preserves_source_comments_and_cdata():
+    from filters.xliff2.filter import XLIFF2Filter
+
+    source = '<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0"><file id="f"><unit id="u"><segment><source><![CDATA[A & B]]><!--editor note--> remains</source><target>Old</target></segment></unit></file></xliff>'
+    filter_instance = XLIFF2Filter()
+    events = tuple(filter_instance.read(source))
+    output = filter_instance.write(events)
+
+    assert '<![CDATA[A & B]]>' in output
+    assert '<!--editor note-->' in output
+    assert '<target>Old</target>' in output
+
+
+def test_native_xliff12_writer_updates_target_after_long_source_replacement():
+    from core.document.model import TextFragment
+    from core.events.model import Event, EventType
+    from filters.xliff.filter import XLIFFFilter
+
+    source = '<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2"><file><body><trans-unit id="u"><source>Hi</source><target>Old</target></trans-unit></body></file></xliff>'
+    filter_instance = XLIFFFilter()
+    events = tuple(filter_instance.read(source))
+    original = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+    translated = original.__class__(
+        original.id,
+        (TextFragment(("A much longer replacement source string",)),),
+        original.metadata,
+        (TextFragment(("A much longer target string",)),),
+    )
+    output = filter_instance.write(
+        tuple(Event(EventType.TEXT_UNIT, translated) if event.type is EventType.TEXT_UNIT else event for event in events)
+    )
+
+    assert "<source>A much longer replacement source string</source>" in output
+    assert "<target>A much longer target string</target>" in output
+    assert "<target>Old</target>" not in output
+
+
+def test_native_xliff2_writer_updates_target_after_long_source_replacement():
+    from core.document.model import TextFragment
+    from core.events.model import Event, EventType
+    from filters.xliff2.filter import XLIFF2Filter
+
+    source = '<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0"><file id="f"><unit id="u"><segment id="s"><source>Hi</source><target>Old</target></segment></unit></file></xliff>'
+    filter_instance = XLIFF2Filter()
+    events = tuple(filter_instance.read(source))
+    original = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+    translated = original.__class__(
+        original.id,
+        (TextFragment(("A much longer replacement source string",)),),
+        original.metadata,
+        (TextFragment(("A much longer target string",)),),
+    )
+    output = filter_instance.write(
+        tuple(Event(EventType.TEXT_UNIT, translated) if event.type is EventType.TEXT_UNIT else event for event in events)
+    )
+
+    assert "<source>A much longer replacement source string</source>" in output
+    assert "<target>A much longer target string</target>" in output
+    assert "<target>Old</target>" not in output
+
+
 def test_xliff2_conversion_uses_native_python_implementation(tmp_path: Path):
     import json
     from importer.pipeline import OkapiConversionPipeline
@@ -586,3 +792,43 @@ def test_generated_epub_filter_reads_xhtml_members(tmp_path: Path):
     assert len(units) == 1
     assert units[0].metadata["epub_path"] == "OEBPS/chapter.xhtml"
     assert "Hello EPUB." in "".join(p for f in units[0].fragments for p in f.parts if isinstance(p, str))
+
+
+def test_native_xliff12_translation_does_not_reserialize_source_inline_markup():
+    from core.document.model import TextFragment
+    from core.events.model import Event, EventType
+    from filters.xliff.filter import XLIFFFilter
+
+    source = '<x:xliff xmlns:x="urn:oasis:names:tc:xliff:document:1.2"><x:file><x:body><x:trans-unit id="u"><x:source>Hello <x:g id="1">world</x:g>.</x:source><x:target>Witaj <x:g id="1">świecie</x:g>.</x:target></x:trans-unit></x:body></x:file></x:xliff>'
+    filter_instance = XLIFFFilter()
+    events = tuple(filter_instance.read(source))
+    unit = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+    translated = unit.__class__(unit.id, unit.fragments, unit.metadata, (TextFragment(("Cześć",)),))
+
+    output = filter_instance.write(tuple(
+        Event(EventType.TEXT_UNIT, translated) if event.type is EventType.TEXT_UNIT else event
+        for event in events
+    ))
+
+    assert '<x:source>Hello <x:g id="1">world</x:g>.</x:source>' in output
+    assert '<x:target>Cześć</x:target>' in output
+
+
+def test_native_xliff2_translation_does_not_reserialize_source_inline_markup():
+    from core.document.model import TextFragment
+    from core.events.model import Event, EventType
+    from filters.xliff2.filter import XLIFF2Filter
+
+    source = '<x:xliff xmlns:x="urn:oasis:names:tc:xliff:document:2.0"><x:file id="f"><x:unit id="u"><x:segment id="s"><x:source>Hello <x:ph id="1"/> world</x:source><x:target>Witaj <x:ph id="1"/> świecie</x:target></x:segment></x:unit></x:file></x:xliff>'
+    filter_instance = XLIFF2Filter()
+    events = tuple(filter_instance.read(source))
+    unit = next(event.resource for event in events if event.type is EventType.TEXT_UNIT)
+    translated = unit.__class__(unit.id, unit.fragments, unit.metadata, (TextFragment(("Cześć",)),))
+
+    output = filter_instance.write(tuple(
+        Event(EventType.TEXT_UNIT, translated) if event.type is EventType.TEXT_UNIT else event
+        for event in events
+    ))
+
+    assert '<x:source>Hello <x:ph id="1"/> world</x:source>' in output
+    assert '<x:target>Cześć</x:target>' in output

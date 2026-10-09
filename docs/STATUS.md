@@ -861,7 +861,6 @@ Kontynuowano etap TextBox bez zmiany globalnej konfiguracji Git; problem `git du
 - Wniosek dla dalszych portów: dla formatów strukturalnych preferowany jest model **parser AST → translatable spans → immutable skeleton → span-aware writer**, zamiast translacji kodu Java 1:1.
 - Następny kandydat do tego samego sposobu portowania: JSON, następnie HTML/XML; filtry DOCX/OpenXML pozostają osobnym, natywnym torem.
 
-
 ## 2026-10-07 — Generyczne odzyskiwanie kontraktu parametrów z Java
 
 - Zakres: automatyzacja konwersji filtrów Okapi → Python; bez ingerencji w proces tłumaczenia.
@@ -917,3 +916,166 @@ Weryfikacja: `86 passed` w `tests/test_docx*`; `compileall` dla `filters/docx` i
 - Backup przed zmianą: backups/20261008-portability/.
 - Weryfikacja: 248 passed, compileall dla aktywnych modułów: OK; grep aktywnego kodu (analyzer, importer, filter_ir, core, filters, differential, tools) nie wykazał ścieżek /home/frs.
 - Nie użyto sudo, nie instalowano pakietów i nie modyfikowano /home/frs/Projekty/tlumacz-v4 ani /home/frs/Projekty/Okapi-main.
+
+## 2026-10-08 — Resolver content-aware dla XLIFF 1.2 / XLIFF 2.x
+
+- Wykryto regresję w aktywnym katalogu natywnym: XLIFF 1.2 i XLIFF 2.x współdzielą rozszerzenia `.xlf/.xliff`, więc zwykły resolver suffix-only wybierał zawsze `native.xliff`.
+- Dodano RED test rozróżniający oba formaty po namespace XML.
+- Minimalna poprawka w `execution/resolver.py` rozpoznaje namespace XLIFF z nagłówka dokumentu i wybiera właściwy descriptor; jawne `format`/`filter_id` zachowują pierwszeństwo.
+- RED: **1 failed, 6 passed**; GREEN po poprawce: **7 passed** w `tests/execution/test_native_catalog.py`.
+- Świeża regresja całej warstwy execution: **26 passed in 1.09s**.
+- Kontrola katalogu runtime potwierdza obecność natywnych ścieżek: DOCX, Markdown, HTML, JSON, YAML, EPUB, XLIFF 1.2 i XLIFF 2.x.
+- Nie użyto sudo, nie instalowano ani nie usuwano pakietów.
+
+### Orkiestracja równoległa
+- @Astral Orchestrator został użyty jako zasada routingu pracy.
+- Uruchomiono cztery równoległe zadania Brainbase dla Planner / Code Reviewer / QA / General Engineer.
+- Wszystkie zostały zablokowane przed wykonaniem przez **CREDITS_EXHAUSTED (allocated=0)**; nie raportuję ich jako wykonanych.
+- Dalsza praca została kontynuowana lokalnie przez OmniCommanderMCP bez zatrzymywania etapu.
+
+## 2026-10-08 — Native TXT w warstwie wykonawczej
+
+- Kontynuowano implementację zgodnie z routingiem @Astral Orchestrator i zasadą pracy równoległej, ale bez tworzenia sztucznych lane'ów tam, gdzie dostępne integracje nie mają uprawnień do lokalnego repozytorium.
+- Zweryfikowano @Zeiko Agents: katalog konta nie zawiera agentów (`count=0`), a dostępne operacje Zeiko dotyczą wyłącznie agentów customer-support dla publicznych stron; nie użyto ich do niepasującej ingerencji w kod.
+- @LLM & Agent Builder Copilot zastosowano do doboru wzorca: bounded parallel workers / orchestrator-worker, deterministyczny kod dla wykonania filtra, testy na granicy narzędzia i osobna weryfikacja.
+- @Vercel zweryfikowano pod kątem aktualnego wzorca agentów i sandboxów; dokumentacja potwierdza możliwość izolowanego wykonania agentowego, ale dostępny interfejs Vercel w tej sesji nie udostępnia tworzenia agenta, który mógłby bezpośrednio modyfikować lokalny checkout. Nie tworzono więc niezależnej kopii projektu.
+- Utworzono backup przed zmianą: `backups/20261008-native-txt-prechange.tar.gz`.
+- Dodano `filters/txt/filter.py` oraz eksport `filters/txt/__init__.py`.
+- Native TXT używa wyłącznie standardowej biblioteki Python i zachowuje pełny UTF-8 payload jako jedną jednostkę `TextUnit`, dzięki czemu round-trip nie zmienia pustych linii, końca pliku, spacji ani Unicode.
+- Dodano `native.txt` do `execution/native_catalog.py` z MIME `text/plain` i rozszerzeniem `.txt`.
+- Dodano testy resolvera i pełnego wykonania TXT.
+- TDD: pierwszy test wykonawczy ujawnił brak wpisu TXT w katalogu; po dodaniu wpisu drugi przebieg ujawnił niepożądane dopisywanie końcowego newline; poprawiono writer i test przeszedł.
+- Testy nowego filtra: **2 passed**.
+- Świeża pełna regresja: **293 passed in 53.53s**.
+- `compileall -q core filter_ir filters analyzer importer differential execution tools`: **OK**.
+- Nie instalowano ani nie usuwano pakietów. Nie użyto sudo. Nie modyfikowano `tlumacz-v4` ani `Okapi-main`.
+
+
+## 2026-10-08 — Kontynuacja: weryfikacja produkcyjnej ścieżki bez JVM
+
+- Przeskanowano katalog `filters/`: brak `TODO`, `NotImplemented` i pustych `pass` w natywnych filtrach.
+- Przeskanowano produkcyjny kod pod kątem `java -jar` i `JAVA_HOME`: brak wystąpień.
+- Potwierdzono, że `analyzer/java_probe/` jest izolowanym narzędziem badawczym używanym do analizy referencyjnego JAR-a; nie jest częścią runtime native backendu.
+- Potwierdzono architekturę: `NativeFilterBackend` wykonuje filtry Python bez JVM, a Java probe pozostaje wyłącznie źródłem evidence dla migracji.
+- Weryfikacja rozszerzona: `tests/execution` + `tests/test_automatic_conversion.py` + `tests/test_cli.py`: **66 passed in 43.72s**.
+
+
+## 2026-10-08 — Kontynuacja: weryfikacja produkcyjnej ścieżki bez JVM
+
+- Przeskanowano katalog `filters/`: brak `TODO`, `NotImplemented` i pustych `pass` w natywnych filtrach.
+- Przeskanowano produkcyjny kod pod kątem `java -jar` i `JAVA_HOME`: brak wystąpień.
+- Potwierdzono, że `analyzer/java_probe/` jest izolowanym narzędziem badawczym używanym do analizy referencyjnego JAR-a; nie jest częścią runtime native backendu.
+- Potwierdzono architekturę: `NativeFilterBackend` wykonuje filtry Python bez JVM, a Java probe pozostaje wyłącznie źródłem evidence dla migracji.
+- Weryfikacja rozszerzona: `tests/execution` + `tests/test_automatic_conversion.py` + `tests/test_cli.py`: **66 passed in 43.72s**.
+
+
+## 2026-10-08 — Native backend: walidacja artefaktu wyjściowego
+
+- TDD wykazało lukę w `NativeFilterBackend`: writer przyjmujący `target` mógł zakończyć się bez utworzenia pliku, a backend nadal zwracał `COMPLETED`.
+- RED: **1 failed** dla writer'a, który nie tworzy targetu.
+- GREEN: backend po każdym zapisie sprawdza `output_path.is_file()` i zgłasza `ValueError`, jeżeli writer nie dostarczył artefaktu.
+- Test regresyjny: **1 passed**.
+- Świeża pełna regresja po poprawce: **294 passed in 51.36s**.
+- `compileall -q core filter_ir filters analyzer importer differential execution tools`: **OK**.
+
+
+## 2026-10-08 — Native execution service factory
+
+- Domknięto brakującą granicę integracyjną: `build_native_execution_service()` buduje gotowy `ExecutionService` z jednego katalogu natywnych filtrów.
+- Fabryka nie zna konkretnych klas filtrów poza `native_catalog.py`; resolver, backend i `JobCoordinator` są składane centralnie.
+- TDD: RED **1 failed** (`ImportError` dla brakującej fabryki), GREEN **8 passed** dla katalogu natywnego.
+- Świeża regresja po integracji: **295 passed in 55.19s**.
+- Świeże `python -m compileall -q core filter_ir filters analyzer importer differential execution tools`: **OK**.
+- Fabryka `build_native_execution_service()` jest eksportowana również przez pakiet `execution`, dzięki czemu klient nie musi znać modułu katalogu.
+- TDD: RED **1 failed** (brak eksportu), GREEN **9 passed** dla katalogu natywnego.
+
+
+## 2026-10-08 — Native service factory: public integration smoke test
+
+- Dodano integracyjny test granicy publicznego API `execution.build_native_execution_service()` dla rzeczywistego `JsonFilter`.
+- Test używa wyłącznie fabryki publicznej: klient nie składa ręcznie `FilterRegistry`, `NativeFilterBackend`, `FilterResolver` ani `JobCoordinator`.
+- Zweryfikowano wykonanie JSON przez warstwę `ExecutionService` i zachowanie round-trip bez JVM.
+- Test katalogu natywnego: **10 passed**.
+- Nie instalowano ani nie usuwano pakietów i nie użyto sudo.
+
+
+## 2026-10-08 — Model TextUnit: rozdzielenie source/target dla natywnego XLIFF
+
+- W trakcie porównania bieżącego modelu z zasadami zastąpienia Okapi wykryto istotną lukę: `TextUnit` przechowywał tylko `fragments`, więc źródło i istniejący target XLIFF nie mogły być reprezentowane jako dwa niezależne strumienie.
+- TDD: RED — nowy test `test_text_unit_can_preserve_distinct_target_fragments` zakończył się `TypeError`, ponieważ model nie znał `target_fragments`.
+- GREEN — `TextUnit` otrzymał opcjonalne `target_fragments`, bez naruszania istniejącego API dla filtrów, które mają tylko source.
+- `XLIFFFilter` 1.2 odczytuje teraz `<target>` do `target_fragments` i zapisuje zmieniony target bez nadpisywania `<source>`.
+- `XLIFF2Filter` otrzymał analogiczne zachowanie dla `<segment><target>`.
+- Test regresyjny dla source/target XLIFF 1.2 oraz modelu: **2 passed**; następnie rozszerzona regresja `tests/test_document_model.py` + `tests/test_automatic_conversion.py`: **47 passed**.
+- Jest to krok modelowy, nie obejście: target pozostaje strukturalną reprezentacją `TextUnit`, a Java nadal nie jest potrzebna w runtime.
+
+
+## 2026-10-09 — XLIFF 2.x: zachowanie zagnieżdżonych inline codes
+
+- Audyt modelu ujawnił, że `XLIFF2Filter._element_parts()` traktował każdy element potomny jako pusty znacznik. Dla `<pc>` tracił tekst wewnętrzny i znaczniki zagnieżdżone, co naruszało strukturę segmentu.
+- TDD RED: dodany `test_native_xliff2_preserves_nested_inline_markup_and_text`; test upadł, ponieważ `very `, ` well` oraz `<ph/>` znikały z modelu.
+- GREEN: parser rozróżnia teraz elementy puste od elementów zawierających tekst lub potomków. Dla tych drugich emituje `Markup.start`, rekurencyjną zawartość oraz `Markup.end`; puste elementy pozostają `Markup.empty`.
+- Weryfikacja ukierunkowana: test zagnieżdżonych inline codes oraz testy source/target dla XLIFF 1.2 i 2.x: **3 passed**.
+- Zakres jest celowo zachowawczy: bez przepisywania całego XML i bez zmian w zależnościach. Następny krok to sprawdzenie writerów pod kątem namespace prefixów, wielu segmentów w jednym unit oraz dopasowania po ID.
+
+
+## 2026-10-09 — XLIFF 2.x: wiele segmentów w jednym unit
+
+- TDD RED: test z dwoma segmentami (`s1`, `s2`) wykazał, że filtr emitował tylko pierwszy segment z `<unit>`.
+- GREEN: `XLIFF2Filter.read()` przechodzi po wszystkich `<segment>` i zapisuje `unit_id`, `segment_id` oraz `segment_index` w metadanych. Przy wielu segmentach `TextUnit.id` jest unikalne w obrębie unit (`unit:segment` lub `unit:index`), a pojedynczy segment zachowuje dotychczasowe ID.
+- Writer dopasowuje segment po ID, a gdy go brak — po indeksie, dzięki czemu aktualizacja targetu drugiego segmentu nie nadpisuje pierwszego.
+- Testy ukierunkowane obejmujące wiele segmentów, zagnieżdżone inline codes oraz source/target obu wersji XLIFF: **4 passed**.
+- Ograniczenie do dalszej pracy: writer nadal używa skanowania tekstowego XML i wymaga osobnych testów dla prefiksowanych namespace'ów oraz nietypowego formatowania/rozmiaru zmian; nie należy uznawać tego filtra za pełną implementację XLIFF 2.x.
+
+
+## 2026-10-09 — XLIFF: tworzenie brakującego targetu
+
+- TDD RED: dodano test segmentu XLIFF 2.x z samym `<source>`; po ustawieniu `target_fragments` writer nie emitował tłumaczenia, bo obsługiwał wyłącznie istniejący `<target>`.
+- GREEN: writer XLIFF 1.2 tworzy brakujący `<target>` przed `</trans-unit>`, a XLIFF 2.x przed `</segment>`, gdy model zawiera target, ale plik wejściowy go nie ma.
+- Testy ukierunkowane dla XLIFF 1.2/2.x — source/target, brakujący target, wiele segmentów i zagnieżdżone inline codes: **5 passed**.
+- Nadal pozostaje do rozwiązania pełna obsługa namespace-prefixów i przejście z tekstowego wyszukiwania tagów do bezpiecznego lokalizowania elementów w zachowującym formatowanie writerze.
+
+
+## 2026-10-09 — XLIFF writer: namespace prefixy
+
+- TDD RED wykazał, że oba writer'y rozpoznawały tylko nieprefiksowane tagi (`<unit>`, `<trans-unit>`, `<source>`, `<target>`), mimo że parser poprawnie czytał dokumenty z prefiksem namespace.
+- Dodano wyszukiwanie tagów po lokalnej nazwie z opcjonalnym prefiksem namespace w XLIFF 1.2 i 2.x. Przy tworzeniu brakującego targetu writer zachowuje prefiks z kontenera segmentu/trans-unit.
+- Testy prefiksowanego namespace'u dla obu wersji oraz regresje target/source, wielu segmentów i inline codes: **7 passed**.
+- To naprawia konkretny przypadek XML z prefiksem; tekstowy writer nadal wymaga dalszego hardeningu (np. komentarze/CDATA, formatowanie tagów i zmiany długości treści) zanim będzie można deklarować pełną zgodność z dowolnym XML.
+
+
+## 2026-10-09 — Dokumentacja projektu i narzędzi
+
+Dodano indeks dokumentacji `docs/README.md` oraz pierwszą spójną serię dokumentów opisujących architekturę projektu, narzędzia developerskie, analizę JAR/Java Probe, testy różnicowe i macierz natywnych filtrów Python. Dokumentacja wyraźnie rozdziela stan potwierdzony kodem od zgodności wymagającej testów. Zmiana dotyczy dokumentacji; w tej operacji nie zmieniano implementacji i nie uruchamiano testów projektu.
+
+
+## 2026-10-09 — Pełna regresja po XLIFF namespace-prefix hardening
+
+- Weryfikacja po ostatnich zmianach writerów XLIFF 1.2/2.x: **305 passed in 63.93s**.
+- `python -m compileall -q core filter_ir filters analyzer importer differential execution tools`: **OK**.
+- Audyty zewnętrznych agentów zostały zgłoszone równolegle, ale ich wykonanie zostało zablokowane przez usługę Brainbase z `CREDITS_EXHAUSTED` (`allocated=0`). Nie raportuję ich jako wykonanej pracy; kontynuowałem lokalny audyt i implementację.
+
+
+## 2026-10-09 — XLIFF writer: długość source i zachowanie CDATA/komentarzy
+
+- TDD RED: regresja dla długiej zmiany `<source>` ujawniła, że oba writer'y mogły dodać drugi `<target>` zamiast zaktualizować istniejący, ponieważ używały offsetów obliczonych przed zmianą długości tekstu.
+- GREEN: po rzeczywistej zmianie source writer ponownie wyznacza granice kontenera i source przed lokalizacją targetu. Testy XLIFF 1.2 i 2.x potwierdzają, że istniejący target zostaje zastąpiony.
+- TDD RED: round-trip XLIFF 2.x z CDATA i komentarzem w source wykazał, że bezwarunkowe zapisywanie source niszczyło te elementy nawet wtedy, gdy source nie był zmieniany.
+- GREEN: gdy serializowana treść source odpowiada `source_original`, writer pozostawia oryginalny fragment XML bez zmian. Chroni to komentarze, CDATA i formatowanie źródła podczas aktualizacji samego targetu.
+- Weryfikacja ukierunkowana: **8 passed**. Pełna regresja po poprawkach: **310 passed in 51.50s**; `python -m compileall -q core filter_ir filters analyzer importer differential execution tools`: **OK**.
+
+
+## 2026-10-09 — XLIFF 1.2: puste inline codes
+
+- TDD RED: nowy test wykazał, że XLIFF 1.2 mapował pusty element inline (`<ph/>`) na parę `Markup.start`/`Markup.end`, mimo że model ma jawny rodzaj `Markup.empty`.
+- GREEN: parser rozróżnia puste elementy od elementów z treścią/potomkami, analogicznie do poprawki w XLIFF 2.x; tekst przed i po elemencie pozostaje w kolejności.
+- Weryfikacja ukierunkowana dla pustych znaczników XLIFF 1.2, zagnieżdżonych inline codes XLIFF 2.x oraz source/target: **4 passed**.
+- Końcowa regresja po wszystkich zmianach XLIFF: **311 passed in 63.31s**; `compileall` i `git diff --check`: **OK**.
+
+
+## 2026-10-09 — DOCX writer: bezpieczna aktualizacja in-place
+
+- TDD RED: nowy test kopiuje fixture DOCX, zmienia tekst pierwszego akapitu i zapisuje wynik pod tą samą ścieżką. Test wykazał `BadZipFile`, ponieważ writer otwierał ten sam plik ZIP jednocześnie do odczytu i zapisu, co natychmiast go obcinało.
+- GREEN: dla zapisu in-place writer tworzy plik tymczasowy w tym samym katalogu, kompletuje cały pakiet, zachowuje bity uprawnień źródła i dopiero potem atomowo podmienia plik przez `os.replace`. Przy błędzie plik tymczasowy jest usuwany, a oryginalny DOCX pozostaje na miejscu.
+- Zapis do innej ścieżki zachowuje dotychczasowy przepływ. Test ukierunkowany: **1 passed**.
+- Końcowa regresja po poprawkach XLIFF i DOCX: **312 passed in 56.96s**; `compileall` i `git diff --check`: **OK**.

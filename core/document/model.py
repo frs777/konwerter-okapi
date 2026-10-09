@@ -105,6 +105,7 @@ class TextUnit:
     id: str
     fragments: tuple[TextFragment, ...]
     metadata: dict[str, str] | None = None
+    target_fragments: tuple[TextFragment, ...] | None = None
 
 
 SkeletonPart = Union[str, Markup]

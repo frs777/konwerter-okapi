@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import escape
 from pathlib import Path
+import re
 from xml.etree import ElementTree as ET
 
 from core.document.model import Markup, TextFragment, TextUnit
@@ -34,16 +35,25 @@ class XLIFF2Filter:
         root = ET.fromstring(self._source)
         yield Event(EventType.START_DOCUMENT, StartDocument(document_name, document_name))
         for unit in root.findall(f".//{NS}unit"):
-            segment = unit.find(f"{NS}segment")
-            source_element = segment.find(f"{NS}source") if segment is not None else None
-            if source_element is None:
-                continue
-            parts = tuple(self._element_parts(source_element))
+            segments = unit.findall(f"{NS}segment")
             unit_id = unit.get("id", "")
-            yield Event(EventType.TEXT_UNIT, TextUnit(
-                unit_id, (TextFragment(parts),),
-                {"part": "xliff2", "unit_id": unit_id, "source_original": self._serialize_parts(parts)},
-            ))
+            for segment_index, segment in enumerate(segments):
+                source_element = segment.find(f"{NS}source")
+                if source_element is None:
+                    continue
+                parts = tuple(self._element_parts(source_element))
+                target_element = segment.find(f"{NS}target")
+                target_parts = tuple(self._element_parts(target_element)) if target_element is not None else None
+                segment_id = segment.get("id", "")
+                unique_id = unit_id if len(segments) == 1 else f"{unit_id}:{segment_id or segment_index}"
+                yield Event(EventType.TEXT_UNIT, TextUnit(
+                    unique_id, (TextFragment(parts),),
+                    {
+                        "part": "xliff2", "unit_id": unit_id, "segment_id": segment_id,
+                        "segment_index": str(segment_index), "source_original": self._serialize_parts(parts),
+                    },
+                    target_fragments=(TextFragment(target_parts),) if target_parts is not None else None,
+                ))
         yield Event(EventType.END_DOCUMENT, None)
 
     def write(self, events, target: str | Path | None = None) -> str:
@@ -54,23 +64,83 @@ class XLIFF2Filter:
             if event.type is not EventType.TEXT_UNIT:
                 continue
             unit = event.resource
-            unit_id = (unit.metadata or {}).get("unit_id", unit.id)
-            replacement = self._serialize_parts(tuple(part for fragment in unit.fragments for part in fragment.parts))
-            start = output.find("<unit", 0)
+            metadata = unit.metadata or {}
+            unit_id = metadata.get("unit_id", unit.id)
+            segment_id = metadata.get("segment_id", "")
+            segment_index = int(metadata.get("segment_index", "0"))
+            source_replacement = self._serialize_parts(
+                tuple(part for fragment in unit.fragments for part in fragment.parts)
+            )
+            target_fragments = unit.target_fragments
+            target_replacement = (
+                self._serialize_parts(tuple(part for fragment in target_fragments for part in fragment.parts))
+                if target_fragments is not None else None
+            )
+            start = self._find_open_tag(output, "unit")
             while start >= 0:
                 end = output.find(">", start)
-                close = output.find("</unit>", end)
+                close = self._find_close_tag(output, "unit", end)
                 if end < 0 or close < 0:
                     break
                 header = output[start:end]
                 if f'id="{escape(unit_id, quote=True)}"' in header or f"id='{escape(unit_id, quote=True)}'" in header:
-                    source_start = output.find("<source", end, close)
-                    source_end = output.find(">", source_start, close)
-                    source_close = output.find("</source>", source_end, close)
-                    if source_start >= 0 and source_end >= 0 and source_close >= 0:
-                        output = output[:source_end + 1] + replacement + output[source_close:]
+                    segment_start = self._find_open_tag(output, "segment", end, close)
+                    for _ in range(segment_index):
+                        if segment_start < 0:
+                            break
+                        segment_start = self._find_open_tag(output, "segment", segment_start + 1, close)
+                    if segment_id and segment_start >= 0:
+                        while segment_start >= 0:
+                            segment_end = output.find(">", segment_start, close)
+                            if segment_end < 0:
+                                segment_start = -1
+                                break
+                            segment_header = output[segment_start:segment_end]
+                            if f'id="{escape(segment_id, quote=True)}"' in segment_header or f"id='{escape(segment_id, quote=True)}'" in segment_header:
+                                break
+                            segment_start = self._find_open_tag(output, "segment", segment_end + 1, close)
+                    if segment_start < 0:
+                        break
+                    segment_end = output.find(">", segment_start, close)
+                    segment_close = self._find_close_tag(output, "segment", segment_end, close)
+                    source_start = self._find_open_tag(output, "source", segment_end, segment_close)
+                    source_end = output.find(">", source_start, segment_close)
+                    source_close = self._find_close_tag(output, "source", source_end, segment_close)
+                    if (
+                        source_start >= 0 and source_end >= 0 and source_close >= 0
+                        and source_replacement != metadata.get("source_original", source_replacement)
+                    ):
+                        output = output[:source_end + 1] + source_replacement + output[source_close:]
+                        end = output.find(">", start)
+                        close = self._find_close_tag(output, "unit", end)
+                        segment_start = self._find_open_tag(output, "segment", end, close)
+                        for _ in range(segment_index):
+                            if segment_start < 0:
+                                break
+                            segment_start = self._find_open_tag(output, "segment", segment_start + 1, close)
+                        if segment_id and segment_start >= 0:
+                            while segment_start >= 0:
+                                segment_end = output.find(">", segment_start, close)
+                                if segment_end < 0:
+                                    segment_start = -1
+                                    break
+                                segment_header = output[segment_start:segment_end]
+                                if f'id="{escape(segment_id, quote=True)}"' in segment_header or f"id='{escape(segment_id, quote=True)}'" in segment_header:
+                                    break
+                                segment_start = self._find_open_tag(output, "segment", segment_end + 1, close)
+                        segment_end = output.find(">", segment_start, close)
+                        segment_close = self._find_close_tag(output, "segment", segment_end, close)
+                    if target_replacement is not None and segment_start >= 0 and segment_end >= 0 and segment_close >= 0:
+                        target_start = self._find_open_tag(output, "target", segment_end, segment_close)
+                        target_end = output.find(">", target_start, segment_close)
+                        target_close = self._find_close_tag(output, "target", target_end, segment_close)
+                        if target_start >= 0 and target_end >= 0 and target_close >= 0:
+                            output = output[:target_end + 1] + target_replacement + output[target_close:]
+                        else:
+                            prefix = self._tag_prefix(output, segment_start)
+                            output = output[:segment_close] + f"<{prefix}target>{target_replacement}</{prefix}target>" + output[segment_close:]
                     break
-                start = output.find("<unit", close + 1)
+                start = self._find_open_tag(output, "unit", close + 1)
         if target is not None:
             Path(target).write_text(output, encoding="utf-8")
         return output
@@ -78,12 +148,35 @@ class XLIFF2Filter:
     def round_trip(self, source: str | Path) -> str:
         return self.write(tuple(self.read(source)))
 
+    @staticmethod
+    def _find_open_tag(source: str, local_name: str, start: int = 0, end: int | None = None) -> int:
+        limit = len(source) if end is None else end
+        match = re.search(rf"<(?:[A-Za-z_][\w.-]*:)?{re.escape(local_name)}(?=[\s>/])", source[start:limit])
+        return start + match.start() if match else -1
+
+    @staticmethod
+    def _find_close_tag(source: str, local_name: str, start: int = 0, end: int | None = None) -> int:
+        limit = len(source) if end is None else end
+        match = re.search(rf"</(?:[A-Za-z_][\w.-]*:)?{re.escape(local_name)}\s*>", source[start:limit])
+        return start + match.start() if match else -1
+
+    @staticmethod
+    def _tag_prefix(source: str, start: int) -> str:
+        match = re.match(r"<[A-Za-z_][\w.-]*:", source[start:])
+        return match.group(0)[1:] if match else ""
+
     def _element_parts(self, element: ET.Element):
         if element.text:
             yield element.text
         for child in element:
             attrs = tuple((key.split("}")[-1], value) for key, value in child.attrib.items())
-            yield Markup.empty(child.tag.split("}")[-1], attrs)
+            name = child.tag.split("}")[-1]
+            if len(child) == 0 and not child.text:
+                yield Markup.empty(name, attrs)
+            else:
+                yield Markup.start(name, attrs)
+                yield from self._element_parts(child)
+                yield Markup.end(name)
             if child.tail:
                 yield child.tail
 
